@@ -1,0 +1,6 @@
+{
+  "name": "Weehur Digital ID",
+  "description": "Professional mobile Employee Digital ID Card application for Weehur Construction featuring interactive card designs, public profile scanning, vCard generation, and comprehensive admin controls.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

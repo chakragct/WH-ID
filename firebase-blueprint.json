@@ -1,0 +1,90 @@
+{
+  "entities": {
+    "Employee": {
+      "title": "Employee",
+      "description": "Represents an employee digital ID card record.",
+      "type": "object",
+      "properties": {
+        "employeeId": {
+          "type": "string",
+          "description": "Unique staff/employee identifier (e.g., WH1234)."
+        },
+        "fullName": {
+          "type": "string",
+          "description": "The full name of the employee."
+        },
+        "designation": {
+          "type": "string",
+          "description": "The staff role or job title."
+        },
+        "department": {
+          "type": "string",
+          "description": "The company department (e.g., Projects, HR)."
+        },
+        "mobile": {
+          "type": "string",
+          "description": "The contact mobile number."
+        },
+        "email": {
+          "type": "string",
+          "description": "The corporate email address."
+        },
+        "site": {
+          "type": "string",
+          "description": "The primary work site or office location."
+        },
+        "nationality": {
+          "type": "string",
+          "description": "The nationality of the employee."
+        },
+        "dateOfJoining": {
+          "type": "string",
+          "description": "The date the employee joined Weehur Construction."
+        },
+        "emergencyContact": {
+          "type": "string",
+          "description": "Emergency contact phone number."
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "URL to the employee photo."
+        },
+        "qrCodeUrl": {
+          "type": "string",
+          "description": "Public profile QR code value or URL."
+        },
+        "activeStatus": {
+          "type": "boolean",
+          "description": "Whether the digital ID is active."
+        },
+        "isAdmin": {
+          "type": "boolean",
+          "description": "Whether this employee has administrator access."
+        }
+      },
+      "required": [
+        "employeeId",
+        "fullName",
+        "designation",
+        "department",
+        "mobile",
+        "email",
+        "site",
+        "nationality",
+        "dateOfJoining",
+        "emergencyContact",
+        "photoUrl",
+        "qrCodeUrl",
+        "activeStatus"
+      ]
+    }
+  },
+  "firestore": {
+    "employees/{employeeDocId}": {
+      "schema": {
+        "$ref": "entities/Employee"
+      },
+      "description": "Collection of employee digital ID cards."
+    }
+  }
+}
