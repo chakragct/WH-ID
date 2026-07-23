@@ -1,2226 +1,2705 @@
-import React, { useState, useEffect } from 'react';
-import {
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Shield, 
+  Users, 
+  MapPin, 
+  FileText, 
+  Clock, 
+  Plus, 
+  Search, 
+  Filter, 
+  LogOut, 
+  Download, 
+  Menu, 
+  X, 
+  Moon, 
+  Sun, 
+  LayoutDashboard, 
+  CheckCircle2, 
+  PlusCircle, 
+  ChevronRight, 
+  AlertTriangle,
   User,
-  Shield,
-  Phone,
+  Activity,
+  UserCheck,
+  UserX,
+  Megaphone,
+  Briefcase,
+  Smartphone,
   Mail,
-  MapPin,
-  Calendar,
+  Lock,
+  Compass,
+  ArrowRight,
+  Heart,
   Globe,
-  Settings,
-  Plus,
-  Edit2,
+  FileSpreadsheet,
+  ArrowLeft,
+  Home,
   Trash2,
-  Download,
-  Share2,
-  Sun,
-  Moon,
-  ToggleLeft,
-  ToggleRight,
-  Bell,
-  Menu,
-  Check,
-  ChevronRight,
-  RefreshCw,
-  QrCode,
-  AlertCircle,
-  FileText,
-  Search,
-  ExternalLink,
-  Users,
-  Copy,
-  LogOut,
-  Sparkles,
-  Camera,
-  X,
-  Scan
+  Phone
 } from 'lucide-react';
-import { Employee, AppSettings } from './types';
-import {
-  fetchEmployees,
-  fetchEmployeeByEmail,
-  saveEmployeeRecord,
-  deleteEmployeeRecord,
-  getActiveUser,
-  setMockUser,
-  logoutUser,
-  tryInitializeFirebase,
-  getLocalStorageEmployees
-} from './lib/firebase';
-import WeehurLogo from './components/WeehurLogo';
-import FlipCard from './components/FlipCard';
-import PhysicalCardMockup from './components/PhysicalCardMockup';
-import { downloadVCard, downloadIDCardAsPNG } from './lib/cardUtils';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Cell
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  Tooltip, 
+  ResponsiveContainer, 
+  Cell, 
+  PieChart, 
+  Pie 
 } from 'recharts';
 
-export default function App() {
-  // Application states
+import { AuthProvider, useAuth } from './context/AuthContext';
+import { initializeFirebase } from './lib/firebase';
+import { 
+  fetchSites, 
+  addWorkSite, 
+  editWorkSite,
+  deleteWorkSite,
+  fetchAllEmployees, 
+  addEmployee, 
+  updateEmployee, 
+  deleteEmployee, 
+  fetchAnnouncements, 
+  addAnnouncement, 
+  deleteAnnouncement,
+  fetchLoginHistory,
+  seedDatabaseIfEmpty
+} from './services/dbService';
+import { Employee, WorkSite, Announcement, LoginHistoryEntry } from './types';
+import { exportEmployeesToCSV } from './utils/export';
+import DigitalIDCard from './components/DigitalIDCard';
+import AddEmployeeModal from './components/AddEmployeeModal';
+import AddSiteModal from './components/AddSiteModal';
+import AddAnnouncementModal from './components/AddAnnouncementModal';
+import { CoworkersModal } from './components/CoworkersModal';
+import { WeeHurLogo } from './components/WeeHurLogo';
+import * as XLSX from 'xlsx';
+
+// Active route tabs in Portal
+type ActiveTab = 'dashboard' | 'directory' | 'sites' | 'announcements' | 'audit';
+
+function AppContent() {
+  const { 
+    currentUser, 
+    currentUserProfile, 
+    isAdmin, 
+    loading, 
+    login, 
+    logout, 
+    resetPassword, 
+    resetPasswordLocal,
+    signUpFirstTime,
+    verifyPreRegisteredEmail,
+    loginWithGoogle,
+    reloadUserProfile
+  } = useAuth();
+
+  // Theme support
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('weehur_theme');
+    return saved === 'dark';
+  });
+
+  // Responsive sidebar toggles
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+
+  // Core synchronized Firestore state
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [currentUser, setCurrentUser] = useState<any>(null);
-  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [sites, setSites] = useState<WorkSite[]>([]);
+  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [loginHistory, setLoginHistory] = useState<LoginHistoryEntry[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
+
+  // Search & Filter state
   const [searchQuery, setSearchQuery] = useState('');
-  const [siteFilter, setSiteFilter] = useState('');
-  const [activeTab, setActiveTab] = useState<'id_card' | 'profile' | 'contact' | 'settings'>('id_card');
-  const [customSites, setCustomSites] = useState<string[]>(() => {
-    const stored = localStorage.getItem('weehur_custom_sites');
-    return stored ? JSON.parse(stored) : ['Weehur Main Site', 'Changi East Site', 'Head Office'];
-  });
-  const [showAddSiteModal, setShowAddSiteModal] = useState(false);
-  const [newSiteName, setNewSiteName] = useState('');
-  const [showEditSiteModal, setShowEditSiteModal] = useState(false);
-  const [siteToEdit, setSiteToEdit] = useState('');
-  const [editedSiteName, setEditedSiteName] = useState('');
-  const [isUpdatingSite, setIsUpdatingSite] = useState(false);
-  const [isLoadingRecords, setIsLoadingRecords] = useState(true);
+  const [selectedSiteFilter, setSelectedSiteFilter] = useState('All');
+  const [selectedDeptFilter, setSelectedDeptFilter] = useState('All');
+  const [directoryStatusFilter, setDirectoryStatusFilter] = useState<'All' | 'Active' | 'Resigned'>('All');
 
+  // Admin Modals state
+  const [isEmpModalOpen, setIsEmpModalOpen] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState<Employee | null>(null);
+  const [isSiteModalOpen, setIsSiteModalOpen] = useState(false);
+  const [editingSite, setEditingSite] = useState<WorkSite | null>(null);
+  const [isAnnounceModalOpen, setIsAnnounceModalOpen] = useState(false);
+  const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
+  const [importLoading, setImportLoading] = useState(false);
+  const [deletingSiteId, setDeletingSiteId] = useState<string | null>(null);
+
+  // Selected colleague profile details modal
+  const [selectedColleague, setSelectedColleague] = useState<Employee | null>(null);
+  const [isCoworkersModalOpen, setIsCoworkersModalOpen] = useState(false);
+
+  // Selected site for staff list display on chart click
+  const [selectedSiteForStaffList, setSelectedSiteForStaffList] = useState<string | null>(null);
+
+  // Dashboard Resigned & Active Staff toggles
+  const [showResignedList, setShowResignedList] = useState(false);
+  const [showActiveList, setShowActiveList] = useState(false);
+
+  // Helper to verify if an employee has a custom uploaded photo
+  const hasValidPhoto = (url?: string) => Boolean(url && url.trim() !== '' && !url.includes('unsplash.com'));
+
+  // Authentication UI Modes: 'signin' | 'firsttime' | 'forgot'
+  const [authMode, setAuthMode] = useState<'signin' | 'firsttime' | 'forgot'>('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authVerifyLoading, setAuthVerifyLoading] = useState(false);
+  const [authVerifiedEmployee, setAuthVerifiedEmployee] = useState<Employee | null>(null);
+  const [authFeedback, setAuthFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Load and bootstrap database
   useEffect(() => {
-    localStorage.setItem('weehur_custom_sites', JSON.stringify(customSites));
-  }, [customSites]);
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
-  const [isDarkMode, setIsDarkMode] = useState(false);
-  
-  // Public Scan View simulation
-  const [simulatedPublicView, setSimulatedPublicView] = useState<string | null>(null); // holds email of public profile
-  const [qrMode, setQrMode] = useState<'public' | 'dev'>('public');
+    const bootstrap = async () => {
+      try {
+        await seedDatabaseIfEmpty();
+        await loadAllData();
+      } catch (err) {
+        console.warn('Initialization warnings:', err);
+      }
+    };
+    bootstrap();
+  }, [currentUser]);
 
-  // ID Scanner state
-  const [isScanOpen, setIsScanOpen] = useState(false);
-  const [activeScanTab, setActiveScanTab] = useState<'camera' | 'simulated'>('camera');
-  const [cameraError, setCameraError] = useState<string | null>(null);
-  const [scanStream, setScanStream] = useState<MediaStream | null>(null);
-  const [isSimulatingScan, setIsSimulatingScan] = useState(false);
-  const [simulatedSelectedEmail, setSimulatedSelectedEmail] = useState('');
-  
-  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  // Sync core stylesheet themes
+  useEffect(() => {
+    localStorage.setItem('weehur_theme', isDarkMode ? 'dark' : 'light');
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [isDarkMode]);
 
-  // Play a beautiful QR scan success beep using Web Audio API
-  const playBeep = () => {
+  const loadAllData = async () => {
+    setDataLoading(true);
     try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(880, ctx.currentTime);
-      gain.gain.setValueAtTime(0.08, ctx.currentTime);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.12);
-    } catch (e) {
-      console.log('Audio scan beep played silently:', e);
+      const { enabled } = initializeFirebase();
+      if (!enabled) return;
+
+      const loadedSites = await fetchSites();
+      setSites(loadedSites);
+
+      const loadedEmployees = await fetchAllEmployees();
+      setEmployees(loadedEmployees);
+
+      const loadedAnnouncements = await fetchAnnouncements();
+      setAnnouncements(loadedAnnouncements);
+
+      if (isAdmin) {
+        const loadedHistory = await fetchLoginHistory();
+        setLoginHistory(loadedHistory);
+      }
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+    } finally {
+      setDataLoading(false);
     }
   };
 
-  // Handle active camera streaming
-  useEffect(() => {
-    if (isScanOpen && activeScanTab === 'camera') {
-      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-        .then(s => {
-          setScanStream(s);
-          if (videoRef.current) {
-            videoRef.current.srcObject = s;
-          }
-          setCameraError(null);
-        })
-        .catch(err => {
-          console.error('Camera access error:', err);
-          setCameraError('Camera access denied or unsupported. Redirecting to our high-fidelity scan simulation environment.');
-          setActiveScanTab('simulated');
-        });
-    } else {
-      if (scanStream) {
-        scanStream.getTracks().forEach(track => track.stop());
-        setScanStream(null);
-      }
-    }
-    return () => {
-      if (scanStream) {
-        scanStream.getTracks().forEach(track => {
-          try {
-            track.stop();
-          } catch (e) {}
-        });
-      }
-    };
-  }, [isScanOpen, activeScanTab]);
-
-  // Admin Forms
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [isDraggingPhoto, setIsDraggingPhoto] = useState(false);
-  const [formData, setFormData] = useState<Partial<Employee>>({
-    employeeId: '',
-    fullName: '',
-    designation: '',
-    mobile: '',
-    email: '',
-    site: 'Head Office',
-    nationality: 'Singaporean',
-    dateOfJoining: '',
-    emergencyContact: '',
-    photoUrl: '',
-    activeStatus: true,
-    isAdmin: false
-  });
-
-  // Load all initial employee records
-  const loadRecords = async () => {
-    setIsLoadingRecords(true);
-    let records: Employee[] = [];
+  // Login handler
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthFeedback(null);
     try {
-      records = await fetchEmployees();
-      setEmployees(records);
-    } catch (err) {
-      console.warn('Listing employees from Firebase is restricted or offline. Falling back to secure cache.');
-      records = getLocalStorageEmployees();
-      setEmployees(records);
+      await login(authEmail, authPassword);
+      setAuthEmail('');
+      setAuthPassword('');
+    } catch (err: any) {
+      setAuthFeedback({ type: 'error', text: err.message || 'Login failed.' });
     }
+  };
 
+  // Google Sign-In handler
+  const handleGoogleSignIn = async () => {
+    setAuthFeedback(null);
     try {
-      // Get currently signed-in user or default to chakra
-      const active = getActiveUser();
-      setCurrentUser(active);
+      await loginWithGoogle();
+    } catch (err: any) {
+      setAuthFeedback({ type: 'error', text: err.message || 'Google Sign-In failed.' });
+    }
+  };
 
-      // Secure public QR code scan lookup:
-      // If a public view is requested, fetch the single active employee document from Firestore.
-      // Unauthenticated users are allowed to 'get' individual active records, avoiding 'list' errors.
-      const params = new URLSearchParams(window.location.search);
-      const isPublic = params.get('public') === 'true';
-      const emailParam = params.get('email');
+  // First-time signup verification handler
+  const handleVerifyEmailForSetup = async () => {
+    setAuthFeedback(null);
+    if (!authEmail.trim()) {
+      setAuthFeedback({ type: 'error', text: 'Please enter your registered email.' });
+      return;
+    }
+    setAuthVerifyLoading(true);
+    try {
+      const emp = await verifyPreRegisteredEmail(authEmail.toLowerCase().trim());
+      if (emp) {
+        if (emp.status !== 'Active') {
+          setAuthFeedback({ type: 'error', text: 'This employee profile is no longer active. Please contact your system Administrator.' });
+        } else {
+          setAuthVerifiedEmployee(emp);
+          setAuthFeedback({ type: 'success', text: `Pre-registered employee found: "${emp.fullName}". Please set a strong login password.` });
+        }
+      } else {
+        setAuthFeedback({ type: 'error', text: 'Email not found in Employee Database. Employee profiles must be pre-registered by an Admin.' });
+      }
+    } catch (err: any) {
+      setAuthFeedback({ type: 'error', text: err.message || 'Verification failed.' });
+    } finally {
+      setAuthVerifyLoading(false);
+    }
+  };
 
-      if (isPublic && emailParam) {
-        const liveEmp = await fetchEmployeeByEmail(emailParam);
-        if (liveEmp) {
-          // Upsert the live employee profile so it is verified correctly from Firestore
-          setEmployees(prev => {
-            const filtered = prev.filter(e => e.email.toLowerCase() !== emailParam.toLowerCase());
-            return [...filtered, liveEmp];
-          });
+  // Execute password creation setup
+  const handleFirstTimeSetupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthFeedback(null);
+    if (!authPassword.trim() || authPassword.length < 6) {
+      setAuthFeedback({ type: 'error', text: 'Password must be at least 6 characters long.' });
+      return;
+    }
+    try {
+      await signUpFirstTime(authEmail, authPassword);
+      setAuthEmail('');
+      setAuthPassword('');
+      setAuthVerifiedEmployee(null);
+      setAuthMode('signin');
+      setAuthFeedback({ type: 'success', text: 'Account registered and password created! Redirecting to Portal...' });
+    } catch (err: any) {
+      setAuthFeedback({ type: 'error', text: err.message || 'Registration failed.' });
+    }
+  };
+
+  // Forgot password trigger
+  const handleForgotPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthFeedback(null);
+    try {
+      await resetPassword(authEmail.trim());
+      setAuthFeedback({ type: 'success', text: 'Password reset link dispatched to your email! Please check spam or promotions.' });
+    } catch (err: any) {
+      setAuthFeedback({ type: 'error', text: err.message || 'Failed to dispatch reset email.' });
+    }
+  };
+
+  // Execute password reset local setup
+  const handleForgotPasswordResetSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthFeedback(null);
+    if (!authPassword.trim() || authPassword.length < 6) {
+      setAuthFeedback({ type: 'error', text: 'Password must be at least 6 characters long.' });
+      return;
+    }
+    try {
+      await resetPasswordLocal(authEmail, authPassword);
+      setAuthEmail('');
+      setAuthPassword('');
+      setAuthVerifiedEmployee(null);
+      setAuthMode('signin');
+      setAuthFeedback({ type: 'success', text: 'Password reset successfully! You can now log in using your new password.' });
+    } catch (err: any) {
+      setAuthFeedback({ type: 'error', text: err.message || 'Reset failed.' });
+    }
+  };
+
+  // Save/Edit Employee handler
+  const handleSaveEmployee = async (data: Omit<Employee, 'id' | 'qrCodeDataUrl'>) => {
+    try {
+      const emailLower = data.email.toLowerCase().trim();
+      if (editingEmployee) {
+        await updateEmployee(editingEmployee.email, data);
+      } else {
+        await addEmployee(data);
+      }
+      await loadAllData();
+
+      // Update selectedColleague state if they were being viewed
+      if (selectedColleague && selectedColleague.email.toLowerCase() === emailLower) {
+        const updatedList = await fetchAllEmployees();
+        const updatedColleague = updatedList.find(e => e.email.toLowerCase() === emailLower);
+        if (updatedColleague) {
+          setSelectedColleague(updatedColleague);
         }
       }
 
-      // Find current employee's record
-      const myRecord = records.find(e => e.email.toLowerCase() === active.email.toLowerCase());
-      if (myRecord) {
-        setSelectedEmployee(myRecord);
-      } else if (records.length > 0) {
-        // Fallback to first
-        setSelectedEmployee(records[0]);
+      // Reload currently logged in user profile if they edited themselves
+      if (currentUserProfile && currentUserProfile.email.toLowerCase() === emailLower) {
+        await reloadUserProfile();
       }
-    } catch (err) {
-      console.error('Error post-processing loaded records:', err);
-    } finally {
-      setIsLoadingRecords(false);
+    } catch (err: any) {
+      throw err;
     }
   };
 
-  useEffect(() => {
-    loadRecords();
-  }, []);
-
-  // Sync state when active user changes
-  const handleUserChange = (email: string) => {
-    setMockUser(email);
-    const active = getActiveUser();
-    setCurrentUser(active);
-    const emp = employees.find(e => e.email.toLowerCase() === email.toLowerCase());
-    if (emp) {
-      setSelectedEmployee(emp);
+  // Delete employee record
+  const handleDeleteEmployee = async (email: string) => {
+    if (window.confirm(`Are you absolutely sure you want to permanently delete employee profile: "${email}"? This action cannot be undone.`)) {
+      try {
+        await deleteEmployee(email);
+        await loadAllData();
+      } catch (err: any) {
+        alert('Failed to delete: ' + err.message);
+      }
     }
-    showToast(`Signed in as ${emp?.fullName || email}`, 'success');
   };
 
-  const triggerLogout = async () => {
-    await logoutUser();
-    localStorage.removeItem('weehur_mock_auth');
-    const active = getActiveUser();
-    setCurrentUser(active);
-    const emp = employees.find(e => e.email.toLowerCase() === active.email.toLowerCase());
-    if (emp) setSelectedEmployee(emp);
-    showToast('Logged out of digital identity session.', 'info');
-  };
-
-  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
-  const handlePhotoFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      showToast('Please select an image file.', 'error');
-      return;
-    }
+  // Toggle between Active and Resigned status
+  const handleToggleEmployeeStatus = async (emp: Employee) => {
+    const nextStatus = emp.status === 'Active' ? 'Resigned' : 'Active';
+    const lastDateOfWork = nextStatus === 'Resigned' ? new Date().toISOString().split('T')[0] : '';
+    const confirmationText = nextStatus === 'Resigned' 
+      ? `Are you sure you want to mark "${emp.fullName}" as Resigned? This will set their last day of work to today.`
+      : `Are you sure you want to reactivate "${emp.fullName}"?`;
     
-    // Check file size (limit to 1.5MB for base64 storage)
-    if (file.size > 1.5 * 1024 * 1024) {
-      showToast('Photo is too large. Please select an image under 1.5MB.', 'error');
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target?.result as string;
-      if (result) {
-        setFormData(prev => ({ ...prev, photoUrl: result }));
-        showToast('Photo uploaded and loaded successfully!', 'success');
-      }
-    };
-    reader.onerror = () => {
-      showToast('Failed to read image file.', 'error');
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // Create or Update operations
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.email || !formData.fullName || !formData.employeeId) {
-      showToast('Please fill out all required fields', 'error');
-      return;
-    }
-
-    // Default placeholder photo if empty
-    const updatedPhoto = formData.photoUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=400&auto=format&fit=crop&q=80';
-    const finalRecord: Employee = {
-      id: formData.email,
-      employeeId: formData.employeeId,
-      fullName: formData.fullName.toUpperCase(),
-      designation: formData.designation?.toUpperCase() || 'STAFF',
-      mobile: formData.mobile || '+65 9123 4567',
-      email: formData.email,
-      site: formData.site || 'Weehur Main Site',
-      nationality: formData.nationality || 'Singaporean',
-      dateOfJoining: formData.dateOfJoining || new Date().toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' }),
-      emergencyContact: formData.emergencyContact || '+65 6789 1234',
-      photoUrl: updatedPhoto,
-      qrCodeUrl: `${getSharedBaseUrl()}?public=true&email=${formData.email}`,
-      activeStatus: formData.activeStatus !== undefined ? formData.activeStatus : true,
-      isAdmin: formData.isAdmin !== undefined ? formData.isAdmin : false
-    };
-
-    try {
-      await saveEmployeeRecord(finalRecord);
-      await loadRecords();
-      setShowAddModal(false);
-      setShowEditModal(false);
-      showToast(`Employee record for ${finalRecord.fullName} saved successfully!`, 'success');
-    } catch (err) {
-      showToast('Permission denied or invalid schema config.', 'error');
-    }
-  };
-
-  const handleEditClick = (emp: Employee) => {
-    setFormData(emp);
-    setShowEditModal(true);
-  };
-
-  const handleDeleteClick = async (email: string) => {
-    if (window.confirm(`Are you sure you want to permanently delete record for ${email}?`)) {
+    if (window.confirm(confirmationText)) {
       try {
-        await deleteEmployeeRecord(email);
-        await loadRecords();
-        showToast('Employee record permanently removed.', 'info');
-      } catch (err) {
-        showToast('Only administrators can remove employees.', 'error');
+        await updateEmployee(emp.email, { 
+          status: nextStatus,
+          lastDateOfWork: lastDateOfWork || undefined
+        });
+        await loadAllData();
+      } catch (err: any) {
+        alert('Failed to update status: ' + err.message);
       }
     }
   };
 
-  const toggleEmployeeActive = async (emp: Employee) => {
-    const updated = { ...emp, activeStatus: !emp.activeStatus };
+  // Reset employee password via Admin trigger
+  const handleAdminResetPassword = async (email: string) => {
     try {
-      await saveEmployeeRecord(updated);
-      await loadRecords();
-      showToast(`Employee ID status set to ${updated.activeStatus ? 'CONFIRMED (VALID)' : 'RESIGNED (INVALID)'}.`, 'info');
-    } catch (err) {
-      showToast('Admin authority required to modify status.', 'error');
+      await resetPassword(email);
+      alert(`A secure password reset verification link was sent to: ${email}`);
+    } catch (err: any) {
+      alert('Failed to trigger reset: ' + err.message);
     }
   };
 
-  const handleEditSiteName = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const oldName = siteToEdit.trim();
-    const newName = editedSiteName.trim();
-
-    if (!newName) {
-      showToast('Site name cannot be empty.', 'error');
-      return;
-    }
-
-    if (oldName.toLowerCase() === newName.toLowerCase()) {
-      setShowEditSiteModal(false);
-      return;
-    }
-
-    if (sitesList.some(s => s.toLowerCase() === newName.toLowerCase() && s !== oldName)) {
-      showToast('This site name already exists.', 'error');
-      return;
-    }
-
-    setIsUpdatingSite(true);
+  // Create/Edit site handler
+  const handleSaveSite = async (name: string, editingSiteId?: string) => {
     try {
-      // 1. Update the customSites list
-      const updatedCustom = customSites.map(s => s === oldName ? newName : s);
-      if (!customSites.includes(oldName)) {
-        updatedCustom.push(newName);
+      if (editingSiteId) {
+        await editWorkSite(editingSiteId, name);
+      } else {
+        await addWorkSite(name, name);
       }
-      setCustomSites(updatedCustom);
-      localStorage.setItem('weehur_custom_sites', JSON.stringify(updatedCustom));
+      await loadAllData();
+      setEditingSite(null);
+    } catch (err: any) {
+      throw err;
+    }
+  };
 
-      // 2. Update all employee records at the old site
-      const affectedEmployees = employees.filter(emp => emp.site === oldName);
-      let successCount = 0;
-      
-      for (const emp of affectedEmployees) {
-        try {
-          await saveEmployeeRecord({
-            ...emp,
-            site: newName
-          });
-          successCount++;
-        } catch (err) {
-          console.error(`Failed to update employee ${emp.fullName}:`, err);
+  // Delete site handler
+  const handleDeleteSite = async (siteId: string) => {
+    try {
+      await deleteWorkSite(siteId);
+      await loadAllData();
+      setDeletingSiteId(null);
+    } catch (err: any) {
+      alert(`Error deleting work site: ${err.message || err}`);
+    }
+  };
+
+  // Create announcement handler
+  const handleCreateAnnouncement = async (title: string, content: string) => {
+    try {
+      const author = currentUserProfile?.fullName || 'System Admin';
+      await addAnnouncement(title, content, author);
+      await loadAllData();
+    } catch (err: any) {
+      throw err;
+    }
+  };
+
+  // Delete announcement handler
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this announcement?')) return;
+    try {
+      await deleteAnnouncement(id);
+      await loadAllData();
+    } catch (err: any) {
+      alert(`Error deleting announcement: ${err.message || err}`);
+    }
+  };
+
+  // Bulk Excel/CSV Import handler
+  const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportLoading(true);
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const jsonData = XLSX.utils.sheet_to_json<any>(worksheet);
+
+      if (!jsonData || jsonData.length === 0) {
+        alert('The uploaded spreadsheet appears to be empty.');
+        setImportLoading(false);
+        return;
+      }
+
+      // Helper to query row values with robust case/whitespace/non-alphanumeric tolerance
+      const getRowValue = (row: any, searchKeys: string[], defaultValue: any = ''): any => {
+        const normalizedSearch = searchKeys.map(k => k.toLowerCase().replace(/[^a-z0-9]/g, ''));
+        for (const key of Object.keys(row)) {
+          const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (normalizedSearch.includes(normalizedKey)) {
+            const val = row[key];
+            return val !== undefined && val !== null ? val : defaultValue;
+          }
         }
-      }
+        return defaultValue;
+      };
 
-      // 3. Reload everything
-      await loadRecords();
+      let successCount = 0;
+      let errorCount = 0;
+      const skipDetails: string[] = [];
 
-      // 4. Update the siteFilter if it was set to the old site
-      if (siteFilter === oldName) {
-        setSiteFilter(newName);
-      }
+      for (let i = 0; i < jsonData.length; i++) {
+        const row = jsonData[i];
+        
+        // Map common spreadsheet headers with fallback heuristics
+        const fullNameRaw = getRowValue(row, ['Staff Name', 'fullName', 'Full Name', 'Name', 'StaffName']);
+        const fullName = fullNameRaw ? String(fullNameRaw).trim() : '';
+        
+        const emailRaw = getRowValue(row, ['email', 'Email Address', 'Email', 'EmailAddress']);
+        const email = emailRaw ? String(emailRaw).trim().toLowerCase() : '';
 
-      showToast(`Site renamed to "${newName}". ${successCount} staff member(s) transferred!`, 'success');
-      setShowEditSiteModal(false);
-    } catch (err) {
-      showToast('Error updating work site name.', 'error');
-    } finally {
-      setIsUpdatingSite(false);
-    }
-  };
+        // If a row has absolutely no staff name and no email, it is likely a blank spreadsheet row, skip silently
+        if (!fullName && !email) {
+          continue;
+        }
 
-  const handleDeleteSite = async (siteName: string) => {
-    if (!hasFullAccess) {
-      showToast('Super Admin authority required to delete sites.', 'error');
-      return;
-    }
+        const employeeIdRaw = getRowValue(row, ['employeeId', 'Staff ID', 'Employee ID', 'ID', 'Id', 'StaffId', 'EmployeeId']);
+        const employeeId = employeeIdRaw 
+          ? String(employeeIdRaw).trim() 
+          : `EMP-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    if (window.confirm(`Are you sure you want to permanently delete the work site "${siteName}"? All employees currently assigned to this site will be set to "Unassigned".`)) {
-      try {
-        // 1. Remove from customSites list
-        const updatedCustom = customSites.filter(s => s !== siteName);
-        setCustomSites(updatedCustom);
-        localStorage.setItem('weehur_custom_sites', JSON.stringify(updatedCustom));
+        const phone = String(getRowValue(row, ['Mobile Number', 'Mobile', 'phone', 'Phone', 'Contact Number', 'Contact'], '-')).trim();
+        const designation = String(getRowValue(row, ['designation', 'Designation', 'Job Title', 'JobTitle', 'Position', 'position'], 'Staff')).trim();
+        const department = String(getRowValue(row, ['department', 'Department', 'Dept', 'dept'], 'General')).trim();
+        const company = String(getRowValue(row, ['company', 'Company', 'Organization', 'org'], 'WeeHur Construction')).trim();
+        
+        // Parse Role (Admin vs Employee)
+        const roleRaw = String(getRowValue(row, ['Role', 'role', 'System Role', 'SystemRole', 'User Role', 'UserRole', 'Permission'], 'Employee')).trim();
+        const role: 'Admin' | 'Employee' = roleRaw.toLowerCase() === 'admin' ? 'Admin' : 'Employee';
 
-        // 2. Update any employee assigned to this site
-        const affectedEmployees = employees.filter(emp => emp.site === siteName);
-        let successCount = 0;
-        for (const emp of affectedEmployees) {
-          try {
-            await saveEmployeeRecord({
-              ...emp,
-              site: '' // Unassign
-            });
-            successCount++;
-          } catch (err) {
-            console.error(`Failed to clear site for employee ${emp.fullName}:`, err);
+        // Date of Employment
+        const dateJoined = String(getRowValue(row, ['Date of Employment', 'dateJoined', 'Date Joined', 'Joined Date', 'DateOfEmployment'], new Date().toISOString().split('T')[0])).trim();
+        
+        // Date of Joined to Site
+        const dateJoinedProject = String(getRowValue(row, ['Date of Joined to Site', 'Date Joined to Site', 'Date of Joined to Project', 'Date Joined to Project', 'Project Joined Date', 'DateJoinedProject', 'DateJoinedSite'], '')).trim();
+
+        // Remarks
+        const remarksInput = String(getRowValue(row, ['Remarks', 'remarks', 'Note', 'notes'], '')).trim();
+
+        // Site
+        const siteInput = String(getRowValue(row, ['Site', 'Work Site', 'Project Site', 'Sites', 'site'], '')).trim();
+        const workSites = siteInput ? String(siteInput).split(',').map(s => s.trim()).filter(Boolean) : [];
+
+        // Auto-create imported sites that don't exist in our global database
+        for (const siteName of workSites) {
+          const exists = sites.some(s => s.name.toLowerCase() === siteName.toLowerCase());
+          if (!exists) {
+            try {
+              await addWorkSite(siteName, siteName);
+              // Optimistically add to the sites list state so other rows can reference it
+              sites.push({
+                id: siteName.replace(/\s+/g, '-').toLowerCase(),
+                name: siteName,
+                createdAt: new Date().toISOString()
+              });
+            } catch (err) {
+              console.warn('Could not auto-create site from import:', siteName, err);
+            }
           }
         }
 
-        // 3. Reload everything
-        await loadRecords();
-
-        // 4. Reset siteFilter if it was set to the deleted site
-        if (siteFilter === siteName) {
-          setSiteFilter('');
+        let statusInput = String(getRowValue(row, ['status', 'Status'], 'Active')).trim();
+        let status: 'Active' | 'Resigned' = 'Active';
+        if (statusInput.toLowerCase() === 'resigned' || statusInput.toLowerCase() === 'inactive') {
+          status = 'Resigned';
         }
 
-        showToast(`Site "${siteName}" deleted. ${successCount} staff member(s) unassigned!`, 'success');
-      } catch (err) {
-        showToast('Error deleting work site.', 'error');
+        const lastDateOfWork = String(getRowValue(row, ['lastDateOfWork', 'Last Date of Work', 'Last Working Date', 'Last Working Day'], '')).trim();
+
+        if (!fullName || !email) {
+          errorCount++;
+          skipDetails.push(`Row ${i + 2}: Missing ${!fullName ? 'Staff Name' : 'Email Address'}`);
+          continue;
+        }
+
+        if (!email.toLowerCase().trim().endsWith('@weehur.com.sg')) {
+          errorCount++;
+          skipDetails.push(`Row ${i + 2} (${fullName}): Email domain must end with @weehur.com.sg`);
+          continue;
+        }
+
+        const newEmp: Omit<Employee, 'id'> = {
+          employeeId: String(employeeId),
+          fullName: String(fullName),
+          photoUrl: '',
+          email: String(email).trim().toLowerCase(),
+          phone: String(phone),
+          designation: String(designation),
+          department: String(department),
+          company: String(company),
+          workSites,
+          status,
+          dateJoined: String(dateJoined),
+          dateJoinedProject: dateJoinedProject ? String(dateJoinedProject) : undefined,
+          remarks: remarksInput ? String(remarksInput).trim() : undefined,
+          lastDateOfWork: lastDateOfWork ? String(lastDateOfWork) : undefined,
+          role
+        };
+
+        try {
+          await addEmployee(newEmp);
+          successCount++;
+        } catch (dbErr: any) {
+          console.error('Error importing employee:', dbErr);
+          errorCount++;
+          skipDetails.push(`Row ${i + 2} (${fullName}): ${dbErr.message || dbErr}`);
+        }
       }
-    }
-  };
 
-  const handleShare = (emp: Employee) => {
-    const shareText = `Weehur Construction Digital ID Card:\nName: ${emp.fullName}\nID: ${emp.employeeId}\nDesignation: ${emp.designation}\nVerify at: ${getSharedBaseUrl()}?public=true&email=${emp.email}`;
-    if (navigator.share) {
-      navigator.share({
-        title: 'Weehur Digital ID',
-        text: shareText,
-        url: getSharedBaseUrl()
-      }).catch(() => {});
-    } else {
-      navigator.clipboard.writeText(shareText);
-      showToast('ID Profile text copied to clipboard!', 'success');
-    }
-  };
-
-  const exportEmployees = () => {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(employees, null, 2));
-    const downloadAnchor = document.createElement('a');
-    downloadAnchor.setAttribute("href", dataStr);
-    downloadAnchor.setAttribute("download", "weehur_employees_export.json");
-    document.body.appendChild(downloadAnchor);
-    downloadAnchor.click();
-    downloadAnchor.remove();
-    showToast('Exported employee directory to JSON.', 'success');
-  };
-
-  const handleScanDetect = (emp: Employee) => {
-    playBeep();
-    showToast(`Successfully scanned ${emp.fullName}'s ID Card!`, 'success');
-    setIsScanOpen(false);
-    setSimulatedPublicView(emp.email);
-  };
-
-  // Catch direct public scan routes
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const isPublic = params.get('public');
-    const emailParam = params.get('email');
-    if (isPublic === 'true' && emailParam) {
-      setSimulatedPublicView(emailParam);
-    }
-  }, []);
-
-  // Helper to construct a public shareable URL, auto-bypassing the 403 Forbidden dev restriction in AI Studio
-  const getSharedBaseUrl = () => {
-    const origin = window.location.origin;
-    // Replace 'ais-dev-' with 'ais-pre-' to generate the public Shared App URL
-    if (window.location.hostname.includes('ais-dev-')) {
-      return origin.replace('ais-dev-', 'ais-pre-');
-    }
-    return origin;
-  };
-
-  const simulatedScanUrl = selectedEmployee 
-    ? `${qrMode === 'public' ? getSharedBaseUrl() : window.location.origin}?public=true&email=${selectedEmployee.email}`
-    : '';
-
-  // Determine user authorization roles
-  const isRootSuperAdmin = currentUser?.email?.toLowerCase() === 'chakra@weehur.com.sg';
-  const currentUserRecord = employees.find(e => e.email.toLowerCase() === currentUser?.email?.toLowerCase());
-  
-  // Only the root super admin (chakra@weehur.com.sg) or accounts explicitly set as Admin in the db have administrative panel / write access
-  const hasFullAccess = isRootSuperAdmin || currentUserRecord?.isAdmin === true;
-
-  // Check if the current URL parameters indicate a public QR scan view
-  const isFromQRScan = React.useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get('public') === 'true' && !!params.get('email');
-  }, []);
-
-  // Restrict employee visibility for regular staff
-  const accessibleEmployees = hasFullAccess 
-    ? employees 
-    : employees.filter(e => e.email.toLowerCase() === currentUser?.email?.toLowerCase());
-
-  // Filter list
-  const filteredEmployees = accessibleEmployees.filter(e => {
-    const matchesSearch = e.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          e.employeeId.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesSite = !siteFilter || e.site === siteFilter;
-    return matchesSearch && matchesSite;
-  });
-
-  // List of all sites, including default pre-populated ones and custom-created ones
-  const sitesList = React.useMemo(() => {
-    const employeeSites = employees.map(e => e.site).filter(Boolean);
-    const combined = Array.from(new Set([...customSites, ...employeeSites]));
-    return combined.sort();
-  }, [employees, customSites]);
-
-  const uniqueSites = sitesList;
-
-  // Dynamic workforce distribution calculation for Recharts
-  const siteDistributionData = React.useMemo(() => {
-    const siteCounts: Record<string, number> = {};
-    employees.forEach(emp => {
-      const siteName = emp.site || 'Other/Unknown';
-      siteCounts[siteName] = (siteCounts[siteName] || 0) + 1;
-    });
-    return Object.entries(siteCounts).map(([name, value]) => ({
-      name,
-      count: value
-    }));
-  }, [employees]);
-
-  // Handle Standalone Public Profile Verification Loading State
-  if (isLoadingRecords && simulatedPublicView) {
-    return (
-      <div className={`min-h-screen flex flex-col justify-between ${isDarkMode ? 'bg-[#060F1D] text-slate-100' : 'bg-[#F3F4F6] text-slate-800'}`}>
-        <header className="sticky top-0 z-40 bg-[#0B1F3A] dark:bg-[#060F1D] py-4 px-6 border-b border-[#1F2937] shadow-lg text-white flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <WeehurLogo className="h-9" light={true} />
-            <div className="hidden sm:block border-l border-white/20 pl-3">
-              <span className="text-[10px] font-black tracking-widest text-[#D71920] block">STAFF VERIFICATION PORTAL</span>
-              <span className="text-[9px] text-gray-400 font-bold tracking-wider block">WEE HUR CONSTRUCTION PTE LTD</span>
-            </div>
-          </div>
-        </header>
-        <main className="flex-1 flex flex-col items-center justify-center p-4">
-          <div className="flex flex-col items-center gap-4 bg-white dark:bg-[#0B1F3A] p-10 rounded-[32px] shadow-2xl border border-gray-200 dark:border-slate-800 max-w-sm w-full text-center">
-            <RefreshCw className="w-12 h-12 text-[#D71920] animate-spin" />
-            <h3 className="text-sm font-black uppercase tracking-widest text-[#0B1F3A] dark:text-white">Verifying Identity...</h3>
-            <p className="text-xs text-gray-400 font-medium">Please wait while we establish a secure cryptographic handshake with the Wee Hur Staff Directory.</p>
-          </div>
-        </main>
-        <footer className="bg-slate-900 border-t border-slate-850 py-5 px-4 text-center text-slate-500">
-          <p className="text-[10px] font-black tracking-widest uppercase text-slate-400">
-            WEE HUR CONSTRUCTION PTE LTD • CORPORATE SECURITY COMPLIANCE
-          </p>
-        </footer>
-      </div>
-    );
-  }
-
-  // Handle Standalone Public Profile Verification (QR code scans)
-  if (simulatedPublicView) {
-    const publicEmp = employees.find(e => e.email.toLowerCase() === simulatedPublicView.toLowerCase());
-    const isValid = publicEmp && publicEmp.activeStatus !== false;
-
-    return (
-      <div className={`min-h-screen transition-colors duration-300 flex flex-col justify-between ${isDarkMode ? 'bg-[#060F1D] text-slate-100' : 'bg-[#F3F4F6] text-slate-800'}`}>
-        {/* Toast Notification */}
-        {toast && (
-          <div className="fixed top-5 right-5 z-50 flex items-center gap-3 px-5 py-3.5 rounded-xl shadow-2xl border bg-[#0B1F3A] text-white animate-bounce" id="toast-notif">
-            {toast.type === 'success' && <Check className="w-5 h-5 text-green-400" />}
-            {toast.type === 'error' && <AlertCircle className="w-5 h-5 text-red-400" />}
-            {toast.type === 'info' && <Sparkles className="w-5 h-5 text-blue-400" />}
-            <span className="text-sm font-semibold">{toast.message}</span>
-          </div>
-        )}
-
-        {/* TOP BRAND BAR */}
-        <header className="sticky top-0 z-40 bg-[#0B1F3A] dark:bg-[#060F1D] py-4 px-6 border-b border-[#1F2937] shadow-lg text-white flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <WeehurLogo className="h-9" light={true} />
-            <div className="hidden sm:block border-l border-white/20 pl-3">
-              <span className="text-[10px] font-black tracking-widest text-[#D71920] block">STAFF VERIFICATION PORTAL</span>
-              <span className="text-[9px] text-gray-400 font-bold tracking-wider block">WEE HUR CONSTRUCTION PTE LTD</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
-              title="Toggle theme"
-            >
-              {isDarkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-400" />}
-            </button>
-            {!isFromQRScan && (
-              <button
-                onClick={() => {
-                  setSimulatedPublicView(null);
-                  window.history.pushState({}, document.title, window.location.pathname);
-                }}
-                className="bg-white/10 hover:bg-[#D71920] hover:text-white px-3 py-1.5 rounded-xl text-xs font-bold text-gray-300 transition-all uppercase tracking-wider flex items-center gap-1"
-              >
-                <X className="w-3.5 h-3.5" />
-                <span>Exit View</span>
-              </button>
-            )}
-          </div>
-        </header>
-
-        {/* STANDALONE CONTENT */}
-        <main className="flex-1 flex items-center justify-center p-4 py-12">
-          <div className="bg-white dark:bg-[#0B1F3A] rounded-[32px] shadow-2xl max-w-md w-full overflow-hidden border border-gray-200 dark:border-slate-800 animate-fade-in flex flex-col">
-            {!publicEmp ? (
-              <>
-                <div className="bg-red-700 px-6 py-5 text-white flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <AlertCircle className="w-5 h-5 bg-white text-red-700 rounded-full p-0.5" />
-                    <span className="font-extrabold text-sm tracking-widest uppercase">ID Not Found</span>
-                  </div>
-                </div>
-                <div className="p-8 text-center text-gray-500 dark:text-gray-400 flex flex-col justify-center items-center my-8">
-                  <AlertCircle className="w-16 h-16 text-red-500 mb-4 animate-pulse" />
-                  <h3 className="text-lg font-black text-slate-800 dark:text-white uppercase tracking-tight">Access Denied</h3>
-                  <p className="font-semibold text-xs mt-2 text-gray-400 max-w-xs">The staff member profile you scanned was not found or is no longer active in our database.</p>
-                  
-                  {!isFromQRScan && (
-                    <button
-                      onClick={() => {
-                        setSimulatedPublicView(null);
-                        window.history.pushState({}, document.title, window.location.pathname);
-                      }}
-                      className="mt-6 px-6 py-3 bg-[#0B1F3A] hover:bg-[#D71920] text-white font-extrabold text-xs uppercase tracking-wider rounded-xl transition-all"
-                    >
-                      Return to Portal
-                    </button>
-                  )}
-                </div>
-              </>
-            ) : (
-              <>
-                <div className={`${isValid ? 'bg-green-600' : 'bg-red-700'} px-6 py-4.5 text-white flex justify-between items-center shadow-md`}>
-                  <div className="flex items-center gap-2.5">
-                    {isValid ? (
-                      <>
-                        <span className="relative flex h-2.5 w-2.5">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-100 opacity-75"></span>
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-200"></span>
-                        </span>
-                        <span className="font-black text-[11px] tracking-widest uppercase">VERIFIED STAFF IDENTITY</span>
-                      </>
-                    ) : (
-                      <>
-                        <AlertCircle className="w-4 h-4 bg-white text-red-700 rounded-full p-0.5" />
-                        <span className="font-black text-[11px] tracking-widest uppercase">INVALID / REVOKED BADGE</span>
-                      </>
-                    )}
-                  </div>
-                  <span className="text-[9px] bg-white/20 px-2.5 py-0.5 rounded-full font-mono font-bold uppercase tracking-wider">
-                    {isValid ? 'ACTIVE' : 'REVOKED'}
-                  </span>
-                </div>
-
-                <div className="p-6 flex flex-col items-center">
-                  {!isValid && (
-                    <div className="w-full mb-4 p-3 bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400 rounded-xl text-center font-black text-[10px] uppercase tracking-wider border border-red-200 dark:border-red-950/30 flex items-center justify-center gap-2 animate-pulse">
-                      <AlertCircle className="w-4 h-4 shrink-0" />
-                      <span>STAFF HAS RESIGNED - BADGE DEACTIVATED</span>
-                    </div>
-                  )}
-
-                  <div className="mb-4">
-                    <FlipCard
-                      photoUrl={publicEmp.photoUrl}
-                      fullName={publicEmp.fullName}
-                      qrValue={`${getSharedBaseUrl()}?public=true&email=${publicEmp.email}`}
-                    />
-                  </div>
-
-                  <h2 className={`text-xl font-black ${isValid ? 'text-slate-800 dark:text-white' : 'text-gray-400 dark:text-gray-500 line-through'} uppercase tracking-tight text-center leading-snug`}>
-                    {publicEmp.fullName}
-                  </h2>
-                  <p className={`text-sm font-extrabold ${isValid ? 'text-red-600' : 'text-red-400'} uppercase tracking-widest mt-1`}>
-                    {publicEmp.designation}
-                  </p>
-                  <p className="text-xs text-gray-400 font-bold uppercase tracking-wider mt-0.5">{publicEmp.department || 'Projects'}</p>
-
-                  <div className="w-full mt-6 space-y-3 bg-gray-50 dark:bg-slate-900/40 p-4.5 rounded-2xl border border-gray-100 dark:border-gray-800">
-                    <div className="flex justify-between items-center text-xs pb-2.5 border-b border-gray-100 dark:border-gray-800">
-                      <span className="text-gray-400 uppercase font-bold text-[10px]">Staff BAS ID</span>
-                      <span className="font-bold text-slate-700 dark:text-slate-300 font-mono">{publicEmp.employeeId}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-xs pb-2.5 border-b border-gray-100 dark:border-gray-800">
-                      <span className="text-gray-400 uppercase font-bold text-[10px]">Deployment Site</span>
-                      <span className="font-bold text-slate-700 dark:text-slate-300">{publicEmp.site}</span>
-                    </div>
-                    <div className="flex justify-between items-center text-xs pb-2.5 border-b border-gray-100 dark:border-gray-800">
-                      <span className="text-gray-400 uppercase font-bold text-[10px]">Verified On</span>
-                      <span className="font-bold text-slate-500 dark:text-slate-450 font-mono text-[10px]">
-                        {new Date().toLocaleDateString('en-SG', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center text-xs">
-                      <span className="text-gray-400 uppercase font-bold text-[10px]">Cryptographic Node</span>
-                      <span className="font-bold text-[#D71920] font-mono text-[10px] tracking-widest">
-                        WH-{publicEmp.employeeId}-{publicEmp.dateOfJoining.split(' ').slice(-1)[0] || '2024'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Public Quick Action Buttons with minimum 44px touch targets */}
-                  <div className="grid grid-cols-2 gap-3.5 w-full mt-6">
-                    <a
-                      href={`tel:${publicEmp.mobile}`}
-                      className="flex items-center justify-center gap-2 h-12 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition-all active:scale-95"
-                      id="action-call"
-                    >
-                      <Phone className="w-4 h-4 shrink-0" />
-                      <span>Call Staff</span>
-                    </a>
-                    <button
-                      onClick={() => {
-                        downloadVCard(publicEmp);
-                        showToast('Staff contact card downloaded.', 'success');
-                      }}
-                      className="flex items-center justify-center gap-2 h-12 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition-all active:scale-95"
-                      id="action-save"
-                    >
-                      <Download className="w-4 h-4 shrink-0" />
-                      <span>Save Contact</span>
-                    </button>
-                    <a
-                      href={`mailto:${publicEmp.email}`}
-                      className="flex items-center justify-center gap-2 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition-all active:scale-95"
-                      id="action-email"
-                    >
-                      <Mail className="w-4 h-4 shrink-0" />
-                      <span>Send Email</span>
-                    </a>
-                    <button
-                      onClick={() => handleShare(publicEmp)}
-                      className="flex items-center justify-center gap-2 h-12 bg-orange-500 hover:bg-orange-600 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md transition-all active:scale-95"
-                      id="action-share"
-                    >
-                      <Share2 className="w-4 h-4 shrink-0" />
-                      <span>Share Card</span>
-                    </button>
-                  </div>
-
-                  {!isFromQRScan && (
-                    <button
-                      onClick={() => {
-                        setSimulatedPublicView(null);
-                        window.history.pushState({}, document.title, window.location.pathname);
-                      }}
-                      className="mt-6 text-[10px] text-gray-400 hover:text-[#D71920] font-black uppercase tracking-widest transition-colors"
-                    >
-                      ← Return to main portal
-                    </button>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </main>
-
-        {/* BOTTOM BRAND COMPLIANCE FOOTER */}
-        <footer className="bg-slate-900 border-t border-slate-850 py-5 px-4 text-center text-slate-500">
-          <p className="text-[10px] font-black tracking-widest uppercase text-slate-400">
-            WEE HUR CONSTRUCTION PTE LTD • CORPORATE SECURITY COMPLIANCE
-          </p>
-          <p className="text-[9px] max-w-sm mx-auto text-slate-500 leading-relaxed mt-1 font-semibold uppercase tracking-wider">
-            Secure Cryptographic Verification Node ISO 27001 Certified. Verified OK.
-          </p>
-        </footer>
-      </div>
-    );
-  }
-
-  // Handle Main Portal Loading State
-  if (isLoadingRecords && !simulatedPublicView) {
-    return (
-      <div className={`min-h-screen flex flex-col items-center justify-center ${isDarkMode ? 'bg-[#060F1D] text-slate-100' : 'bg-[#F3F4F6] text-slate-800'}`}>
-        <div className="flex flex-col items-center gap-4 bg-white dark:bg-[#0B1F3A] p-10 rounded-[32px] shadow-2xl border border-gray-200 dark:border-slate-800 max-w-sm w-full text-center">
-          <RefreshCw className="w-12 h-12 text-[#D71920] animate-spin" />
-          <h3 className="text-sm font-black uppercase tracking-widest text-[#0B1F3A] dark:text-white">Loading Digital ID Portal...</h3>
-          <p className="text-xs text-gray-400 font-medium font-mono">Connecting to secure personnel database...</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`min-h-screen transition-colors duration-300 ${isDarkMode ? 'bg-[#060F1D] text-slate-100' : 'bg-[#F3F4F6] text-slate-800'}`}>
+      await loadAllData();
       
-      {/* SCAN ID MODAL */}
-      {isScanOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/85 backdrop-blur-md flex items-center justify-center p-4" id="scanner-modal">
-          <div className="relative bg-white dark:bg-[#0B1F3A] rounded-[32px] shadow-2xl max-w-lg w-full overflow-hidden border border-gray-100 dark:border-slate-800 animate-fade-in">
+      let reportMsg = `Import completed! Successfully imported ${successCount} staff member(s).`;
+      if (errorCount > 0) {
+        reportMsg += `\n\nSkipped or Errored rows: ${errorCount}`;
+        if (skipDetails.length > 0) {
+          reportMsg += `\nDetail logs:\n` + skipDetails.slice(0, 10).map(d => `• ${d}`).join('\n');
+          if (skipDetails.length > 10) {
+            reportMsg += `\n...and ${skipDetails.length - 10} more rows.`;
+          }
+        }
+      }
+      alert(reportMsg);
+      
+      setIsExcelImportOpen(false);
+    } catch (err) {
+      console.error('Failed to read file:', err);
+      alert('Error parsing Excel file. Please ensure it is a valid .xlsx, .xls, or .csv file.');
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  // Filter colleague list according to Site assignments (employees only see same site)
+  const filteredEmployeesForActiveUser = useMemo(() => {
+    if (!currentUserProfile) return [];
+
+    let filtered = [...employees];
+
+    // SECURE SITE RESTRICTION FOR NON-ADMINS:
+    // "Employees should only see employees working at the same site(s) assigned to them."
+    if (!isAdmin) {
+      const userSites = currentUserProfile.workSites || [];
+      filtered = filtered.filter(emp => {
+        // Must share at least one assigned site
+        return (emp.workSites || []).some(site => userSites.includes(site));
+      });
+    }
+
+    // Search query matches
+    if (searchQuery.trim()) {
+      const queryLower = searchQuery.toLowerCase().trim();
+      filtered = filtered.filter(emp => 
+        emp.fullName.toLowerCase().includes(queryLower) ||
+        emp.employeeId.toLowerCase().includes(queryLower) ||
+        emp.designation.toLowerCase().includes(queryLower) ||
+        emp.email.toLowerCase().includes(queryLower) ||
+        (emp.remarks && emp.remarks.toLowerCase().includes(queryLower))
+      );
+    }
+
+    // Site selection dropdown filter
+    if (selectedSiteFilter !== 'All') {
+      filtered = filtered.filter(emp => (emp.workSites || []).includes(selectedSiteFilter));
+    }
+
+    // Filter by directory status (All, Active, Resigned)
+    if (directoryStatusFilter !== 'All') {
+      filtered = filtered.filter(emp => emp.status === directoryStatusFilter);
+    }
+
+    // When viewing Active status, sort staff site by site
+    if (directoryStatusFilter === 'Active') {
+      filtered.sort((a, b) => {
+        const siteA = (a.workSites || []).join(', ').toLowerCase();
+        const siteB = (b.workSites || []).join(', ').toLowerCase();
+        if (siteA !== siteB) return siteA.localeCompare(siteB);
+        return a.fullName.localeCompare(b.fullName);
+      });
+    }
+
+    return filtered;
+  }, [employees, currentUserProfile, isAdmin, searchQuery, selectedSiteFilter, directoryStatusFilter]);
+
+  // Group active employees by site (show 1 site followed by other sites)
+  const activeStaffBySiteGroups = useMemo(() => {
+    const activeStaff = employees.filter(e => e.status === 'Active');
+    
+    // Collect all site names
+    const siteNamesSet = new Set<string>();
+    sites.forEach(s => siteNamesSet.add(s.name));
+    activeStaff.forEach(e => {
+      (e.workSites || []).forEach(ws => {
+        if (ws && ws !== 'All') siteNamesSet.add(ws);
+      });
+    });
+
+    const siteList = Array.from(siteNamesSet);
+    const groups: { siteName: string; staff: Employee[] }[] = [];
+
+    siteList.forEach(siteName => {
+      const staffAtSite = activeStaff.filter(e => 
+        (e.workSites || []).includes(siteName) || (e.workSites || []).includes('All')
+      );
+      if (staffAtSite.length > 0) {
+        groups.push({
+          siteName,
+          staff: staffAtSite
+        });
+      }
+    });
+
+    const unassigned = activeStaff.filter(e => !e.workSites || e.workSites.length === 0);
+    if (unassigned.length > 0) {
+      groups.push({
+        siteName: 'Corporate HQ / Unassigned',
+        staff: unassigned
+      });
+    }
+
+    return groups;
+  }, [employees, sites]);
+
+  // Statistics
+  const stats = useMemo(() => {
+    const totalCount = employees.length;
+    const activeCount = employees.filter(e => e.status === 'Active').length;
+    const resignedCount = employees.filter(e => e.status === 'Resigned').length;
+    const totalSites = sites.length;
+
+    // Chart Data: distribution of employees by site
+    const distributionBySite = sites.map(site => {
+      const count = employees.filter(e => e.workSites.includes(site.name)).length;
+      return {
+        name: site.name,
+        count: count
+      };
+    });
+
+    // Chart Data: distribution of employees by department
+    const departments = Array.from(new Set(employees.map(e => e.department || 'Unassigned')));
+    const distributionByDepartment = departments.map(dept => {
+      const count = employees.filter(e => e.department === dept).length;
+      return {
+        name: dept,
+        count: count
+      };
+    });
+
+    // Chart Data: active vs resigned status split
+    const statusData = [
+      { name: 'Active', value: activeCount, color: '#10B981' },
+      { name: 'Resigned', value: resignedCount, color: '#EF4444' }
+    ];
+
+    return {
+      totalCount,
+      activeCount,
+      resignedCount,
+      totalSites,
+      distributionBySite,
+      distributionByDepartment,
+      statusData
+    };
+  }, [employees, sites]);
+
+  // Allowable sites in dropdown filter (Employees can only choose within their assigned list)
+  const availableSitesFilterList = useMemo(() => {
+    if (isAdmin) return sites.map(s => s.name);
+    return currentUserProfile?.workSites || [];
+  }, [sites, currentUserProfile, isAdmin]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50 dark:bg-[#030712] transition-colors">
+        <div className="w-12 h-12 rounded-2xl border-4 border-blue-600 border-t-transparent animate-spin mb-4" />
+        <h3 className="text-xs font-black uppercase tracking-widest text-slate-400">
+          Loading Security Vault...
+        </h3>
+      </div>
+    );
+  }
+
+  // ==================== AUTHENTICATION SCREENS ====================
+  if (!currentUser || !currentUserProfile) {
+    return (
+      <div className="min-h-screen bg-gradient-to-tr from-slate-100 to-slate-200 dark:from-[#030712] dark:to-[#0B152B] flex flex-col justify-center items-center p-4 transition-colors">
+        
+        {/* Core Auth card */}
+        <div className="w-full max-w-md bg-white dark:bg-[#0F172A] rounded-3xl shadow-2xl border border-slate-200/40 dark:border-slate-800/60 overflow-hidden" id="auth-portal-card">
+          
+          {/* Header branding */}
+          <div className="bg-gradient-to-r from-blue-900 to-slate-900 px-6 py-8 text-center text-white relative">
+            <div className="absolute top-4 right-4">
+              <button 
+                onClick={() => setIsDarkMode(!isDarkMode)}
+                className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-all cursor-pointer"
+              >
+                {isDarkMode ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5" />}
+              </button>
+            </div>
             
-            {/* Modal Header */}
-            <div className="bg-[#0B1F3A] dark:bg-[#060F1D] px-6 py-5 text-white flex justify-between items-center border-b border-gray-200 dark:border-slate-800">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-red-600/10 text-red-500 rounded-xl">
-                  <QrCode className="w-5 h-5 animate-pulse" />
-                </div>
-                <div>
-                  <h3 className="font-black text-sm tracking-widest uppercase">Scan Staff QR / ID</h3>
-                  <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider">Access Corporate Profile Logs</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsScanOpen(false)}
-                className="p-2 hover:bg-white/10 text-gray-400 hover:text-white rounded-xl transition-all"
-                title="Close"
-              >
-                <X className="w-5 h-5" />
-              </button>
+            <div className="flex justify-center mb-3">
+              <WeeHurLogo className="w-16 h-16" />
             </div>
+            <h1 className="text-lg font-black uppercase tracking-wider">
+              WeeHur Construction Pte Ltd
+            </h1>
+            <p className="text-[10px] text-blue-200 font-bold uppercase tracking-widest mt-1">
+              Corporate Employee Management Portal
+            </p>
+          </div>
 
-            {/* Selector Tabs */}
-            <div className="flex border-b border-gray-100 dark:border-slate-800 p-2 gap-2 bg-slate-50 dark:bg-[#09172A]">
-              <button
-                onClick={() => {
-                  setActiveScanTab('camera');
-                  setCameraError(null);
-                }}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
-                  activeScanTab === 'camera'
-                    ? 'bg-white dark:bg-[#0B1F3A] text-red-600 dark:text-red-400 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
-                }`}
-              >
-                <Camera className="w-4 h-4" />
-                <span>📷 Live Camera Feed</span>
-              </button>
-              <button
-                onClick={() => setActiveScanTab('simulated')}
-                className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 ${
-                  activeScanTab === 'simulated'
-                    ? 'bg-white dark:bg-[#0B1F3A] text-red-600 dark:text-red-400 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-900 dark:hover:text-white'
-                }`}
-              >
-                <Scan className="w-4 h-4" />
-                <span>🧪 Simulated Scanner</span>
-              </button>
-            </div>
-
-            {/* Modal Body */}
-            <div className="p-6">
-              {activeScanTab === 'camera' ? (
-                <div className="flex flex-col items-center">
-                  {cameraError ? (
-                    <div className="p-5 bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-2xl text-center border border-red-100 dark:border-red-950/40 mb-4">
-                      <AlertCircle className="w-10 h-10 mx-auto mb-2.5" />
-                      <p className="text-xs font-bold leading-relaxed">{cameraError}</p>
-                    </div>
-                  ) : (
-                    <div className="relative w-full max-w-sm aspect-square bg-black rounded-3xl overflow-hidden border-4 border-[#0B1F3A] shadow-inner mb-4 flex items-center justify-center">
-                      {/* Live Camera Feed Stream */}
-                      <video
-                        ref={videoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className="absolute inset-0 w-full h-full object-cover"
-                      />
-
-                      {/* Cool scanning target finder overlays */}
-                      <div className="absolute inset-0 border-4 border-black/30 pointer-events-none"></div>
-                      <div className="absolute top-10 bottom-10 left-10 right-10 border-2 border-dashed border-red-500 rounded-2xl pointer-events-none flex items-center justify-center">
-                        {/* Pulse scanner line */}
-                        <div className="w-full h-1 bg-red-500/80 shadow-[0_0_15px_#D71920] rounded-full animate-bounce"></div>
-                      </div>
-
-                      {/* Glowing scanner corner indicators */}
-                      <div className="absolute top-6 left-6 w-8 h-8 border-t-4 border-l-4 border-red-600 rounded-tl-xl"></div>
-                      <div className="absolute top-6 right-6 w-8 h-8 border-t-4 border-r-4 border-red-600 rounded-tr-xl"></div>
-                      <div className="absolute bottom-6 left-6 w-8 h-8 border-b-4 border-l-4 border-red-600 rounded-bl-xl"></div>
-                      <div className="absolute bottom-6 right-6 w-8 h-8 border-b-4 border-r-4 border-red-600 rounded-br-xl"></div>
-
-                      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-[#0B1F3A]/80 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/10 text-white text-[9px] font-bold uppercase tracking-widest flex items-center gap-1.5 animate-pulse">
-                        <span className="w-1.5 h-1.5 bg-green-500 rounded-full"></span>
-                        LIVE ID CAPTURING...
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="w-full flex flex-col gap-2 mt-2">
-                    <button
-                      onClick={() => {
-                        // Pick a random employee for simulated success
-                        if (employees.length > 0) {
-                          setIsSimulatingScan(true);
-                          const randomIndex = Math.floor(Math.random() * employees.length);
-                          const randomEmp = employees[randomIndex];
-                          setTimeout(() => {
-                            setIsSimulatingScan(false);
-                            handleScanDetect(randomEmp);
-                          }, 1500);
-                        }
-                      }}
-                      disabled={isSimulatingScan}
-                      className="w-full py-3 bg-[#D71920] hover:bg-[#b51419] disabled:bg-slate-400 text-white rounded-2xl text-xs font-black uppercase tracking-wider shadow-md transition-all flex items-center justify-center gap-2"
-                    >
-                      {isSimulatingScan ? (
-                        <>
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                          <span>Processing scan result...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Camera className="w-4 h-4" />
-                          <span>⚡ Simulated Scan Match</span>
-                        </>
-                      )}
-                    </button>
-                    <p className="text-[10px] text-gray-400 text-center font-semibold uppercase tracking-wider mt-1.5">
-                      Point camera at any printed badge or ID QR code to scan.
-                    </p>
+          <div className="p-6">
+            
+            {/* Feedback Alerts */}
+            {authFeedback && (
+              authFeedback.text.includes('EMAIL_PASSWORD_DISABLED') ? (
+                <div className="p-4 rounded-2xl text-xs font-medium mb-5 border bg-amber-50 dark:bg-amber-950/20 text-slate-800 dark:text-amber-200 border-amber-200 dark:border-amber-900/30 space-y-2">
+                  <div className="flex items-center gap-1.5 font-black uppercase text-[10px] tracking-wider text-amber-600 dark:text-amber-400">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Firebase Auth Set-up Required</span>
                   </div>
+                  <p className="text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">
+                    The <strong>Email/Password</strong> login provider needs to be enabled in your Firebase Console. Please follow these simple steps:
+                  </p>
+                  <ol className="list-decimal list-inside pl-1 text-[11px] space-y-1 text-slate-600 dark:text-slate-300 font-bold">
+                    <li>Go to your <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 underline hover:text-blue-700">Firebase Console</a></li>
+                    <li>Select the project: <span className="font-mono text-[10px] bg-slate-100 dark:bg-slate-900 px-1 py-0.5 rounded text-red-500">ai-studio-weehurdigitalid-0542da6c</span></li>
+                    <li>Go to <strong className="text-slate-900 dark:text-white">Authentication</strong> &gt; <strong className="text-slate-900 dark:text-white">Sign-in method</strong></li>
+                    <li>Click <strong className="text-slate-900 dark:text-white">Add new provider</strong> &gt; Choose <strong className="text-slate-900 dark:text-white">Email/Password</strong></li>
+                    <li>Toggle the provider to <strong>Enabled</strong> and click <strong>Save</strong></li>
+                  </ol>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-200/40 dark:border-slate-800/40 italic">
+                    Once enabled, refresh this page and you'll be able to sign in or register instantly!
+                  </p>
                 </div>
               ) : (
-                <div className="flex flex-col gap-4">
-                  <div className="p-4 bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 rounded-2xl border border-blue-100 dark:border-blue-950/30 text-xs font-bold leading-relaxed">
-                    🌟 <strong>Simulation Mode:</strong> Select any staff member from the corporate directory below to simulate scanning their physical QR code and instantly view their profile.
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[10px] text-gray-400 font-extrabold uppercase tracking-wider block">
-                      Choose Staff ID to Scan
-                    </label>
-                    <select
-                      value={simulatedSelectedEmail}
-                      onChange={(e) => setSimulatedSelectedEmail(e.target.value)}
-                      className="w-full px-4 py-3.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
-                    >
-                      <option value="">-- Choose a staff member --</option>
-                      {employees.map(emp => (
-                        <option key={emp.email} value={emp.email}>
-                          👤 {emp.fullName} ({emp.employeeId}) - {emp.designation}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      const emp = employees.find(e => e.email === simulatedSelectedEmail);
-                      if (emp) {
-                        setIsSimulatingScan(true);
-                        setTimeout(() => {
-                          setIsSimulatingScan(false);
-                          handleScanDetect(emp);
-                        }, 1200);
-                      } else {
-                        showToast('Please select a staff member to simulate scan.', 'error');
-                      }
-                    }}
-                    disabled={isSimulatingScan || !simulatedSelectedEmail}
-                    className="w-full py-3.5 bg-[#D71920] hover:bg-[#b51419] disabled:bg-slate-300 dark:disabled:bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-wider shadow-md transition-all flex items-center justify-center gap-2 mt-2"
-                  >
-                    {isSimulatingScan ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Scanning ID Barcode/QR Code...</span>
-                      </>
-                    ) : (
-                      <>
-                        <QrCode className="w-4 h-4" />
-                        <span>⚡ Execute Simulated Scan</span>
-                      </>
-                    )}
-                  </button>
+                <div className={`p-3 rounded-xl text-xs font-bold mb-4 border ${
+                  authFeedback.type === 'success' 
+                    ? 'bg-green-50 dark:bg-green-950/20 text-green-600 dark:text-green-400 border-green-100 dark:border-green-900/30'
+                    : 'bg-red-50 dark:bg-red-950/20 text-red-600 dark:text-red-400 border-red-100 dark:border-red-900/30'
+                }`}>
+                  {authFeedback.text}
                 </div>
-              )}
+              )
+            )}
+
+            {/* TAB SELECTORS */}
+            <div className="grid grid-cols-2 gap-2 mb-6">
+              <button
+                type="button"
+                onClick={() => { setAuthMode('signin'); setAuthFeedback(null); setAuthVerifiedEmployee(null); }}
+                className={`py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                  authMode === 'signin'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAuthMode('firsttime'); setAuthFeedback(null); setAuthVerifiedEmployee(null); }}
+                className={`py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer ${
+                  authMode === 'firsttime'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-850 text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                First Login
+              </button>
             </div>
 
-            {/* Quick Demo QR scanner helpers */}
-            <div className="bg-slate-50 dark:bg-[#09172A] px-6 py-4 border-t border-gray-100 dark:border-slate-800 text-center">
-              <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest leading-relaxed">
-                Weehur Corporate Secure ID System • ISO 27001 Certified
+            {/* MODE 1: SECURE SIGN-IN */}
+            {authMode === 'signin' && (
+              <form onSubmit={handleLoginSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type="email"
+                      required
+                      value={authEmail}
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                      placeholder="e.g. name@weehur.com.sg"
+                      className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400">
+                      Password
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setAuthMode('forgot')}
+                      className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline font-bold"
+                    >
+                      Forgot?
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type="password"
+                      required
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors shadow-md flex items-center justify-center gap-1.5 cursor-pointer mt-2"
+                >
+                  <Shield className="w-4 h-4" />
+                  <span>Secure Login</span>
+                </button>
+              </form>
+            )}
+
+            {/* MODE 2: FIRST-TIME PASSSWORD CREATION */}
+            {authMode === 'firsttime' && (
+              <div className="space-y-4">
+                {!authVerifiedEmployee ? (
+                  <div className="space-y-4">
+                    <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800">
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal">
+                        Admin pre-registers your corporate email. Verify your pre-registration below to set your personal account password.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                        Pre-Registered Email
+                      </label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                        <input
+                          type="email"
+                          required
+                          value={authEmail}
+                          onChange={(e) => setAuthEmail(e.target.value)}
+                          placeholder="e.g. name@weehur.com.sg"
+                          className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={authVerifyLoading}
+                      onClick={handleVerifyEmailForSetup}
+                      className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors shadow-md flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {authVerifyLoading ? 'Verifying...' : 'Verify Pre-Registration'}
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleFirstTimeSetupSubmit} className="space-y-4 animate-fade-in">
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                        Set Password
+                      </label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                        <input
+                          type="password"
+                          required
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                          placeholder="Min 6 characters"
+                          className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-2.5 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors shadow-md flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Create Password & Sign In</span>
+                    </button>
+                  </form>
+                )}
+              </div>
+            )}
+
+            {/* GOOGLE SIGN-IN ALTERNATIVE */}
+            {(authMode === 'signin' || authMode === 'firsttime') && (
+              <div className="mt-6 pt-5 border-t border-slate-100 dark:border-slate-850">
+                <div className="relative mb-4">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-slate-100 dark:border-slate-800/80"></div>
+                  </div>
+                  <div className="relative flex justify-center text-[10px] uppercase font-black tracking-widest text-slate-400">
+                    <span className="bg-white dark:bg-slate-900 px-3">or access instantly via</span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  className="w-full py-2.5 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-850 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-800 rounded-xl text-xs font-bold transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <svg className="w-4 h-4" viewBox="0 0 24 24">
+                    <path
+                      fill="#4285F4"
+                      d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v3.92h6.61c-.29 1.5-.14 3.01-1.3 4l3.1 2.4c1.8-1.69 2.91-4.18 2.91-7.25z"
+                    />
+                    <path
+                      fill="#34A853"
+                      d="M12 24c3.24 0 5.97-1.08 7.96-2.91l-3.1-2.4c-.9.6-2.04.98-3.32.98-2.55 0-4.71-1.73-5.48-4.05L4.9 18l.06.18C6.93 21.9 10.11 24 12 24z"
+                    />
+                    <path
+                      fill="#FBBC05"
+                      d="M6.52 14.62a7.19 7.19 0 010-4.51L3.3 7.69a11.94 11.94 0 000 10.14l3.22-3.21z"
+                    />
+                    <path
+                      fill="#EA4335"
+                      d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.43-3.43C17.96 1.19 15.24 0 12 0 10.11 0 6.93 2.1 4.96 5.82L8.18 8.4c.77-2.32 2.93-4.05 5.48-4.05z"
+                    />
+                  </svg>
+                  <span>Sign In with Google</span>
+                </button>
+              </div>
+            )}
+
+            {/* MODE 3: FORGOT PASSWORD */}
+            {authMode === 'forgot' && (
+              <div className="space-y-4">
+                {!authVerifiedEmployee ? (
+                  <div className="space-y-4">
+                    <div className="p-3 bg-blue-50 dark:bg-blue-950/20 text-blue-700 dark:text-blue-400 text-[10px] font-bold rounded-xl border border-blue-100 dark:border-blue-950/45 leading-relaxed">
+                      Enter your pre-registered email to instantly verify your profile and reset your password.
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                        Registered Email Address
+                      </label>
+                      <div className="relative">
+                        <Mail className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                        <input
+                          type="email"
+                          required
+                          value={authEmail}
+                          onChange={(e) => setAuthEmail(e.target.value)}
+                          placeholder="e.g. name@weehur.com.sg"
+                          className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setAuthMode('signin'); setAuthFeedback(null); setAuthVerifiedEmployee(null); }}
+                        className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer text-center"
+                      >
+                        Back to Login
+                      </button>
+                      <button
+                        type="button"
+                        disabled={authVerifyLoading}
+                        onClick={handleVerifyEmailForSetup}
+                        className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors shadow-md disabled:opacity-50 cursor-pointer text-center"
+                      >
+                        {authVerifyLoading ? 'Verifying...' : 'Verify Profile'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <form onSubmit={handleForgotPasswordResetSubmit} className="space-y-4 animate-fade-in">
+                    <div className="p-3 bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-400 text-[10px] font-bold rounded-xl border border-green-100 dark:border-green-950/45 leading-relaxed">
+                      Profile Verified: <strong className="text-slate-800 dark:text-white">{authVerifiedEmployee.fullName}</strong>. You can set a new password below.
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">
+                        New Password
+                      </label>
+                      <div className="relative">
+                        <Lock className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                        <input
+                          type="password"
+                          required
+                          value={authPassword}
+                          onChange={(e) => setAuthPassword(e.target.value)}
+                          placeholder="Min 6 characters"
+                          className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => { setAuthVerifiedEmployee(null); setAuthPassword(''); }}
+                        className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer text-center"
+                      >
+                        Back
+                      </button>
+                      <button
+                        type="submit"
+                        className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white rounded-xl text-xs font-black uppercase tracking-wider transition-colors shadow-md cursor-pointer text-center"
+                      >
+                        Reset Password
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+
+          </div>
+
+          {/* Footer Terms */}
+          <div className="bg-slate-50 dark:bg-slate-900/30 px-6 py-4 text-center border-t border-slate-100 dark:border-slate-800/80">
+            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block">
+              WeeHur Construction Pte Ltd Internal System
+            </span>
+          </div>
+
+        </div>
+
+      </div>
+    );
+  }
+
+  // ==================== AUTHENTICATED PORTAL VIEW ====================
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-[#030712] text-slate-900 dark:text-slate-100 font-sans transition-colors duration-250 flex flex-col md:flex-row">
+      
+      {/* MOBILE HEADER BAR */}
+      <div className="md:hidden flex items-center justify-between px-6 py-4 bg-white dark:bg-[#0B132B] border-b border-slate-150 dark:border-slate-800 sticky top-0 z-50 shadow-xs">
+        <div className="flex items-center gap-2">
+          <WeeHurLogo className="w-8 h-8 shrink-0" />
+          <div>
+            <h2 className="text-xs font-black uppercase tracking-wider text-slate-950 dark:text-white leading-none">
+              WeeHur Construction
+            </h2>
+            <p className="text-[8px] text-slate-400 uppercase tracking-widest mt-0.5">Pte Ltd</p>
+          </div>
+        </div>
+
+        <button 
+          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+          className="p-1.5 rounded-xl bg-slate-100 dark:bg-slate-900 text-slate-500 cursor-pointer"
+        >
+          {isSidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+        </button>
+      </div>
+
+      {/* PERSISTENT SIDEBAR DRAWER (Responsive) */}
+      <aside className={`fixed md:static inset-y-0 left-0 w-64 bg-white dark:bg-[#0B132B] border-r border-slate-150 dark:border-slate-800 z-[90] transform md:transform-none transition-transform duration-300 flex flex-col justify-between ${
+        isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+      }`}>
+        
+        <div>
+          {/* Sidebar Corporate Header */}
+          <div className="px-6 py-5 border-b border-slate-150 dark:border-slate-800 hidden md:flex items-center gap-2.5">
+            <WeeHurLogo className="w-9 h-9 shrink-0" />
+            <div className="leading-tight">
+              <h2 className="text-xs font-black uppercase tracking-wider text-slate-950 dark:text-white">
+                WeeHur
+              </h2>
+              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider leading-none">
+                Construction
               </p>
             </div>
           </div>
-        </div>
-      )}
 
-      {/* CORE WORKSPACE GRID */}
-      <div className="max-w-7xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8" id="workspace-grid">
-        
-        {/* LEFT COLUMN: INTERACTIVE DEVICE VIEWPORT (5 cols or centered 12 cols) */}
-        <div className={`${hasFullAccess ? 'lg:col-span-5' : 'lg:col-span-12 flex justify-center'} flex flex-col items-center`} id="device-preview-pane">
-          <div className="text-center mb-6">
-            <h3 className="text-sm font-extrabold text-red-600 dark:text-red-400 uppercase tracking-widest">
-              Digital ID Web Portal
+          {/* Sidebar Top Profile Branding */}
+          <div className="px-6 py-6 border-b border-slate-150 dark:border-slate-800 flex flex-col items-center text-center">
+            <div className="relative w-16 h-16 rounded-full p-0.5 bg-gradient-to-tr from-blue-600 to-indigo-500 shadow-md">
+              {hasValidPhoto(currentUserProfile.photoUrl) ? (
+                <img 
+                  src={currentUserProfile.photoUrl} 
+                  alt={currentUserProfile.fullName}
+                  className="w-full h-full object-cover rounded-full"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-full h-full rounded-full bg-slate-800 dark:bg-slate-900 flex items-center justify-center text-slate-300">
+                  <User className="w-8 h-8 text-slate-300" />
+                </div>
+              )}
+              <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-white bg-green-500" />
+            </div>
+
+            <h3 className="text-sm font-black uppercase text-slate-950 dark:text-white mt-3 truncate max-w-full px-2" title={currentUserProfile.fullName}>
+              {currentUserProfile.fullName}
             </h3>
-            <p className="text-xs text-gray-400">Authentic desktop web rendering with active flip-to-verify interaction</p>
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider ${
+                isAdmin ? 'bg-red-50 text-red-600 dark:bg-red-950/20 dark:text-red-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400'
+              }`}>
+                {isAdmin ? 'ADMIN' : 'EMPLOYEE'}
+              </span>
+              <span className="text-[9px] text-slate-400 font-bold uppercase truncate max-w-[100px]" title={currentUserProfile.designation}>
+                {currentUserProfile.designation}
+              </span>
+            </div>
           </div>
 
-          {/* Web Portal Viewport Card */}
-          <div className="w-full bg-white rounded-[32px] border border-gray-200 dark:border-slate-800 shadow-2xl flex flex-col overflow-hidden dark:bg-[#0B1F3A]" id="web-console-wrapper">
+          {/* Navigation Links */}
+          <nav className="p-4 space-y-1">
+            <button
+              onClick={() => { setActiveTab('dashboard'); setIsSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                activeTab === 'dashboard'
+                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
+                  : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900/60'
+              }`}
+            >
+              <LayoutDashboard className="w-4 h-4" />
+              <span>Dashboard</span>
+            </button>
+
+            <button
+              onClick={() => { setActiveTab('directory'); setIsSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                activeTab === 'directory'
+                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
+                  : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900/60'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>Staff Directory</span>
+            </button>
+
+            {!isAdmin && (
+              <button
+                onClick={() => { setActiveTab('sites'); setIsSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  activeTab === 'sites'
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
+                    : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900/60'
+                }`}
+              >
+                <MapPin className="w-4 h-4" />
+                <span>Work Sites</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => { setActiveTab('announcements'); setIsSidebarOpen(false); }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                activeTab === 'announcements'
+                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
+                  : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900/60'
+              }`}
+            >
+              <FileText className="w-4 h-4" />
+              <span>Announcements</span>
+            </button>
+
+            {isAdmin && (
+              <button
+                onClick={() => { setActiveTab('audit'); setIsSidebarOpen(false); }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  activeTab === 'audit'
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
+                    : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-900/60'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+                <span>Login History</span>
+              </button>
+            )}
+          </nav>
+        </div>
+
+        {/* Sidebar Footer Controls */}
+        <div className="p-4 border-t border-slate-150 dark:border-slate-800 space-y-2 bg-slate-50/50 dark:bg-[#070D1F]/30">
+          <button
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            className="w-full py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center justify-center gap-2 cursor-pointer transition-colors"
+          >
+            {isDarkMode ? (
+              <>
+                <Sun className="w-3.5 h-3.5 text-amber-500" />
+                <span>Light Theme</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5" />
+                <span>Dark Theme</span>
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={logout}
+            className="w-full py-2 bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-950/20 dark:text-red-400 dark:hover:bg-red-950/35 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>End Session</span>
+          </button>
+        </div>
+
+      </aside>
+
+      {/* MAIN VIEWPORT PANELS */}
+      <main className="flex-1 overflow-y-auto px-6 py-6 md:px-8 md:py-8 max-w-7xl mx-auto w-full">
+        
+        {dataLoading ? (
+          <div className="min-h-[60vh] flex flex-col justify-center items-center">
+            <div className="w-10 h-10 rounded-xl border-4 border-blue-600 border-t-transparent animate-spin mb-4" />
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+              Syncing Cloud Databases...
+            </p>
+          </div>
+        ) : (
+          <AnimatePresence mode="wait">
             
-            {/* Corporate Web Header */}
-            <div className="py-5 px-6 flex justify-between items-center bg-[#0B1F3A] text-white border-b border-white/10" id="web-portal-header">
-              <div className="flex items-center gap-3">
-                <WeehurLogo className="h-7" iconOnly={false} light={true} />
-                <span className="hidden sm:inline-block px-2.5 py-0.5 rounded bg-red-600 text-[9px] font-black tracking-widest uppercase">
-                  WEB PORTAL
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center relative cursor-pointer" title="System Alerts">
-                  <Bell className="w-4 h-4 text-[#D71920]" />
-                  <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-600 rounded-full animate-ping" />
+            {/* ==================== 1. TAB: DASHBOARDS ==================== */}
+            {activeTab === 'dashboard' && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+                id="tab-dashboard"
+              >
+                {/* WELCOME BANNER */}
+                <div className="bg-gradient-to-r from-red-950 to-slate-900 p-6 sm:p-8 rounded-3xl text-white grid grid-cols-1 md:grid-cols-3 items-center gap-6 shadow-md border-b-4 border-[#E2231A]">
+                  <div className="space-y-1.5 text-center md:text-left">
+                    <span className="inline-block px-2.5 py-0.5 rounded bg-red-600/30 text-[9px] font-black uppercase tracking-widest text-red-200 border border-red-500/20">
+                      Live Portal Sync Active
+                    </span>
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight">
+                      Welcome {currentUserProfile.fullName}
+                    </h2>
+                    <p className="text-xs text-slate-300 font-medium">
+                      Manage profiles, assign sites, and view secure digital employee identification.
+                    </p>
+                  </div>
+
+                  <div className="flex justify-center items-center">
+                    <div className="bg-white/10 p-3.5 rounded-full border border-white/10 backdrop-blur-xs flex items-center justify-center shadow-lg">
+                      <WeeHurLogo className="w-14 h-14" />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col items-center md:items-end gap-3 shrink-0">
+                    <div className="flex items-center gap-3 bg-white/5 p-3 rounded-2xl border border-white/5 w-full md:w-auto">
+                      <div className="w-10 h-10 rounded-xl bg-[#E2231A] flex items-center justify-center font-black text-white text-sm shadow-md shrink-0">
+                        WH
+                      </div>
+                      <div className="text-left">
+                        <h4 className="text-xs font-black uppercase tracking-wider leading-none">
+                          WeeHur Construction
+                        </h4>
+                        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Corporate HQ</p>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={logout}
+                      className="w-full md:w-auto px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-md border border-red-500"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            {/* Elegant Web Tab Navigation */}
-            <div className="bg-slate-50 dark:bg-slate-900/60 border-b border-gray-100 dark:border-slate-800/80 px-4 py-2 flex gap-1.5 overflow-x-auto" id="web-tab-navigation">
-              <button
-                onClick={() => setActiveTab('id_card')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-extrabold uppercase tracking-wider transition-all whitespace-nowrap ${
-                  activeTab === 'id_card'
-                    ? 'bg-white dark:bg-[#0B1F3A] text-red-600 dark:text-red-400 shadow-sm border border-gray-150 dark:border-slate-800'
-                    : 'text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-white'
-                }`}
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>ID CARD</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('profile')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-extrabold uppercase tracking-wider transition-all whitespace-nowrap ${
-                  activeTab === 'profile'
-                    ? 'bg-white dark:bg-[#0B1F3A] text-red-600 dark:text-red-400 shadow-sm border border-gray-150 dark:border-slate-800'
-                    : 'text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-white'
-                }`}
-              >
-                <User className="w-3.5 h-3.5" />
-                <span>PROFILE</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('contact')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-extrabold uppercase tracking-wider transition-all whitespace-nowrap ${
-                  activeTab === 'contact'
-                    ? 'bg-white dark:bg-[#0B1F3A] text-red-600 dark:text-red-400 shadow-sm border border-gray-150 dark:border-slate-800'
-                    : 'text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-white'
-                }`}
-              >
-                <Phone className="w-3.5 h-3.5" />
-                <span>CONTACT</span>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('settings')}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-[11px] font-extrabold uppercase tracking-wider transition-all whitespace-nowrap ${
-                  activeTab === 'settings'
-                    ? 'bg-white dark:bg-[#0B1F3A] text-red-600 dark:text-red-400 shadow-sm border border-gray-150 dark:border-slate-800'
-                    : 'text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-white'
-                }`}
-              >
-                <Settings className="w-3.5 h-3.5" />
-                <span>SETTINGS</span>
-              </button>
-            </div>
-
-            {/* WEB ACTIVE SCREEN BODY */}
-            <div className="flex-1 min-h-[480px] max-h-[750px] overflow-y-auto bg-slate-50 p-6 flex flex-col items-center dark:bg-[#060F1D]/50" id="web-screen-body">
-              {selectedEmployee ? (
-                <>
-                  {/* TAB 1: FRONT ID CARD */}
-                  {activeTab === 'id_card' && (
-                    <div className="w-full max-w-sm mx-auto flex flex-col items-center" id="phone-id-card-view">
+                {/* ==================== 1A: ADMIN DASHBOARD ==================== */}
+                {isAdmin ? (
+                  <div className="space-y-6 animate-fade-in">
+                    
+                    {/* Core Cards Row */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                       
-                      {/* Interactive Staff ID Card Box */}
-                      <div className="w-full bg-white dark:bg-[#0B1F3A] rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800 overflow-hidden relative flex flex-col p-5 items-center">
-                        
-                        {/* Upper Color Stripe */}
-                        <div className="absolute top-0 inset-x-0 h-2 bg-gradient-to-r from-[#D71920] via-[#0B1F3A] to-[#D71920]" />
-                        
-                        {/* If resigned/invalid, show visual watermark overlay */}
-                        {selectedEmployee.activeStatus === false && (
-                          <div className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-red-950/15">
-                            <div className="transform -rotate-12 bg-red-600/95 text-white font-black text-[11px] px-5 py-2.5 border-2 border-white tracking-widest uppercase rounded-lg shadow-xl animate-pulse">
-                              INVALID / RESIGNED
+                      <div className="bg-white dark:bg-[#0B132B] p-4 rounded-2xl border border-slate-150 dark:border-slate-800 shadow-sm flex items-center gap-3.5">
+                        <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/20 flex items-center justify-center text-blue-600 shrink-0">
+                          <Users className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">Total Employees</span>
+                          <span className="text-xl font-black text-slate-950 dark:text-white leading-none mt-1 block">{stats.totalCount}</span>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowActiveList(!showActiveList);
+                          if (showResignedList) setShowResignedList(false);
+                        }}
+                        className={`p-4 rounded-2xl border text-left flex items-center gap-3.5 w-full cursor-pointer transition-all hover:shadow-md ${
+                          showActiveList 
+                            ? 'bg-green-50/40 dark:bg-green-950/10 border-green-500 dark:border-green-600 ring-1 ring-green-500/20' 
+                            : 'bg-white dark:bg-[#0B132B] border-slate-150 dark:border-slate-800 hover:border-green-300 dark:hover:border-green-900 shadow-sm'
+                        }`}
+                        title="Click to view all active staff grouped site by site"
+                      >
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all ${
+                          showActiveList ? 'bg-green-600 text-white shadow-sm' : 'bg-green-50 dark:bg-green-950/20 text-green-600'
+                        }`}>
+                          <UserCheck className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">Active Status</span>
+                          <span className="text-xl font-black text-green-600 leading-none mt-1 block flex items-center justify-between">
+                            <span>{stats.activeCount}</span>
+                            <span className="text-[8px] font-bold px-2 py-0.5 rounded bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-400 border border-green-100 dark:border-green-950/40 uppercase tracking-widest">
+                              {showActiveList ? 'Collapse' : 'Expand'}
+                            </span>
+                          </span>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowResignedList(!showResignedList);
+                          if (showActiveList) setShowActiveList(false);
+                        }}
+                        className={`p-4 rounded-2xl border text-left flex items-center gap-3.5 w-full cursor-pointer transition-all hover:shadow-md ${
+                          showResignedList 
+                            ? 'bg-red-50/40 dark:bg-red-950/10 border-red-500 dark:border-red-600 ring-1 ring-red-500/20' 
+                            : 'bg-white dark:bg-[#0B132B] border-slate-150 dark:border-slate-800 hover:border-red-300 dark:hover:border-red-900 shadow-sm'
+                        }`}
+                      >
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 transition-all ${
+                          showResignedList ? 'bg-red-500 text-white shadow-sm' : 'bg-red-50 dark:bg-red-950/20 text-red-600'
+                        }`}>
+                          <UserX className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">Resigned Staff</span>
+                          <span className="text-xl font-black text-red-600 leading-none mt-1 block flex items-center justify-between">
+                            <span>{stats.resignedCount}</span>
+                            <span className="text-[8px] font-bold px-2 py-0.5 rounded bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400 border border-red-100 dark:border-red-950/40 uppercase tracking-widest">
+                              {showResignedList ? 'Collapse' : 'Expand'}
+                            </span>
+                          </span>
+                        </div>
+                      </button>
+
+                    </div>
+
+                    {/* Collapsible Active Staff Panel (Grouped Site by Site) */}
+                    <AnimatePresence>
+                      {showActiveList && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0, y: -10 }}
+                          animate={{ opacity: 1, height: 'auto', y: 0 }}
+                          exit={{ opacity: 0, height: 0, y: -10 }}
+                          transition={{ duration: 0.2 }}
+                          className="overflow-hidden bg-white dark:bg-[#0B132B] rounded-2xl border border-green-300 dark:border-green-900/80 p-5 shadow-sm space-y-5"
+                        >
+                          <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
+                            <div className="flex items-center gap-2">
+                              <div className="p-1.5 bg-green-100 dark:bg-green-950/40 text-green-600 dark:text-green-400 rounded-lg">
+                                <UserCheck className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <h3 className="text-xs font-black uppercase tracking-wider text-slate-850 dark:text-slate-200">
+                                  Active Staff Directory — Site by Site ({stats.activeCount})
+                                </h3>
+                                <p className="text-[10px] text-slate-400 font-medium">
+                                  Showing personnel organized site by site
+                                </p>
+                              </div>
                             </div>
+                            <button
+                              onClick={() => setShowActiveList(false)}
+                              className="text-[10px] bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 px-2.5 py-1 rounded-lg font-black uppercase tracking-wider cursor-pointer transition-colors"
+                            >
+                              Hide Registry
+                            </button>
+                          </div>
+
+                          {activeStaffBySiteGroups.length === 0 ? (
+                            <p className="text-xs text-slate-400 italic py-4 text-center">No active staff members found.</p>
+                          ) : (
+                            <div className="space-y-5">
+                              {activeStaffBySiteGroups.map((group, idx) => (
+                                <div key={group.siteName} className="bg-slate-50/80 dark:bg-slate-900/40 rounded-2xl p-4 border border-slate-200/80 dark:border-slate-800 space-y-3">
+                                  
+                                  {/* Site Header */}
+                                  <div className="flex items-center justify-between pb-2 border-b border-slate-200/60 dark:border-slate-800">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-6 h-6 rounded-lg bg-blue-600 text-white font-black text-xs flex items-center justify-center shadow-xs">
+                                        {idx + 1}
+                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        <MapPin className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                                        <h4 className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white">
+                                          Site: {group.siteName}
+                                        </h4>
+                                      </div>
+                                    </div>
+                                    <span className="px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 text-[10px] font-black uppercase tracking-wider border border-blue-200 dark:border-blue-900">
+                                      {group.staff.length} {group.staff.length === 1 ? 'Staff Member' : 'Staff Members'}
+                                    </span>
+                                  </div>
+
+                                  {/* Table of Staff for this site */}
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-collapse">
+                                      <thead>
+                                        <tr className="border-b border-slate-200/60 dark:border-slate-800">
+                                          <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Staff Name</th>
+                                          <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Designation</th>
+                                          <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Assigned Site(s)</th>
+                                          <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Mobile Number</th>
+                                          <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400 text-right">Actions</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 dark:divide-slate-850">
+                                        {group.staff.map(emp => (
+                                          <tr key={emp.email} className="hover:bg-white dark:hover:bg-slate-900 transition-colors">
+                                            <td className="py-2.5 pr-3">
+                                              <div className="flex items-center gap-2.5">
+                                                {hasValidPhoto(emp.photoUrl) ? (
+                                                  <img
+                                                    src={emp.photoUrl}
+                                                    alt={emp.fullName}
+                                                    className="w-8 h-8 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0"
+                                                    referrerPolicy="no-referrer"
+                                                  />
+                                                ) : (
+                                                  <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-900 flex items-center justify-center font-black text-xs shrink-0">
+                                                    {emp.fullName.charAt(0).toUpperCase()}
+                                                  </div>
+                                                )}
+                                                <div className="min-w-0">
+                                                  <span className="text-xs font-bold text-slate-900 dark:text-slate-100 block truncate">{emp.fullName}</span>
+                                                  <span className="text-[9px] text-slate-400 font-mono block truncate">{emp.email}</span>
+                                                </div>
+                                              </div>
+                                            </td>
+                                            <td className="py-2.5 pr-3">
+                                              <span className="text-xs font-extrabold text-slate-800 dark:text-slate-200">{emp.designation}</span>
+                                              <span className="text-[9px] text-slate-400 block">{emp.company || 'WeeHur Construction'}</span>
+                                            </td>
+                                            <td className="py-2.5 pr-3">
+                                              <div className="flex flex-wrap gap-1">
+                                                {emp.workSites.map(st => (
+                                                  <span key={st} className="px-1.5 py-0.5 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 rounded text-[9px] font-extrabold uppercase border border-blue-100 dark:border-blue-900">
+                                                    {st}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            </td>
+                                            <td className="py-2.5 pr-3">
+                                              <a href={`tel:${emp.phone || '+65 6250 1234'}`} className="text-xs font-bold text-slate-800 dark:text-slate-200 hover:text-blue-600 dark:hover:text-blue-400 flex items-center gap-1">
+                                                <Phone className="w-3 h-3 text-green-500" />
+                                                <span>{emp.phone || '+65 6250 1234'}</span>
+                                              </a>
+                                            </td>
+                                            <td className="py-2.5 text-right">
+                                              <button
+                                                type="button"
+                                                onClick={() => setSelectedColleague(emp)}
+                                                className="px-2 py-1 bg-blue-50 dark:bg-blue-950/50 hover:bg-blue-600 hover:text-white text-blue-600 dark:text-blue-400 rounded-lg text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
+                                              >
+                                                View ID
+                                              </button>
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Collapsible Resigned Staff Panel */}
+                    <AnimatePresence>
+                      {showResignedList && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0, y: -10 }}
+                          animate={{ opacity: 1, height: 'auto', y: 0 }}
+                          exit={{ opacity: 0, height: 0, y: -10 }}
+                          transition={{ duration: 0.2 }}
+                          className="overflow-hidden bg-white dark:bg-[#0B132B] rounded-2xl border border-red-200 dark:border-red-950/60 p-5 shadow-sm space-y-4"
+                        >
+                          <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
+                            <div className="flex items-center gap-2">
+                              <UserX className="w-4 h-4 text-red-600" />
+                              <h3 className="text-xs font-black uppercase tracking-wider text-slate-850 dark:text-slate-200">
+                                Resigned Staff Registry with Assigned Sites ({stats.resignedCount})
+                              </h3>
+                            </div>
+                            <button
+                              onClick={() => setShowResignedList(false)}
+                              className="text-[10px] bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 px-2.5 py-1 rounded-lg font-black uppercase tracking-wider cursor-pointer transition-colors"
+                            >
+                              Hide Registry
+                            </button>
+                          </div>
+
+                          {employees.filter(e => e.status === 'Resigned').length === 0 ? (
+                            <p className="text-xs text-slate-400 italic py-4 text-center">No resigned staff members found in the system.</p>
+                          ) : (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="border-b border-slate-100 dark:border-slate-800">
+                                    <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Staff Info</th>
+                                    <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Designation</th>
+                                    <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Department</th>
+                                    <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Assigned Site(s)</th>
+                                    <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 dark:divide-slate-850">
+                                  {employees.filter(e => e.status === 'Resigned').map(emp => (
+                                    <tr key={emp.email} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors">
+                                      <td className="py-3 pr-4">
+                                        <div className="flex items-center gap-3">
+                                          {hasValidPhoto(emp.photoUrl) ? (
+                                            <img
+                                              src={emp.photoUrl}
+                                              alt={emp.fullName}
+                                              className="w-9 h-9 rounded-lg object-cover border border-slate-150 dark:border-slate-800 shrink-0"
+                                              referrerPolicy="no-referrer"
+                                            />
+                                          ) : (
+                                            <div className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                                              <User className="w-5 h-5" />
+                                            </div>
+                                          )}
+                                          <div className="min-w-0">
+                                            <span className="text-xs font-bold text-slate-900 dark:text-slate-100 block truncate">{emp.fullName}</span>
+                                            <span className="text-[9px] font-mono text-slate-400 block">{emp.employeeId || 'No ID'} • {emp.email}</span>
+                                          </div>
+                                        </div>
+                                      </td>
+                                      <td className="py-3 pr-4">
+                                        <span className="text-xs font-semibold text-slate-600 dark:text-slate-350">{emp.designation}</span>
+                                      </td>
+                                      <td className="py-3 pr-4">
+                                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{emp.department || 'General'}</span>
+                                      </td>
+                                      <td className="py-3 pr-4">
+                                        <div className="flex flex-wrap gap-1">
+                                          {(emp.workSites || []).length > 0 ? (
+                                            emp.workSites.map(siteName => (
+                                              <span
+                                                key={siteName}
+                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 text-[9px] font-black uppercase tracking-wider border border-blue-100/50 dark:border-blue-950/45"
+                                              >
+                                                <MapPin className="w-2.5 h-2.5 shrink-0 text-blue-500" />
+                                                {siteName}
+                                              </span>
+                                            ))
+                                          ) : (
+                                            <span className="text-[10px] text-slate-400 italic">No sites assigned</span>
+                                          )}
+                                        </div>
+                                      </td>
+                                      <td className="py-3">
+                                        <button
+                                          type="button"
+                                          onClick={() => setSelectedColleague(emp)}
+                                          className="px-2.5 py-1 text-[9px] font-black uppercase tracking-wider bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg border border-slate-200 dark:border-slate-850 cursor-pointer transition-all"
+                                        >
+                                          View Profile
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {/* Quick Action Matrix & Analytics Layout */}
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                      
+                      {/* Left Block: Quick Actions Grid */}
+                      <div className="lg:col-span-4 space-y-6">
+                        
+                        <div className="bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-5 shadow-sm space-y-4">
+                          <h3 className="text-xs font-black uppercase tracking-wider text-slate-400">
+                            Quick Administrative Tasks
+                          </h3>
+                          <div className="grid grid-cols-2 gap-2.5">
+                            <button
+                              onClick={() => { setEditingEmployee(null); setIsEmpModalOpen(true); }}
+                              className="col-span-2 p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                            >
+                              <Plus className="w-4 h-4" />
+                              <span>Add Staff</span>
+                            </button>
+
+                            <button
+                              onClick={() => setIsAnnounceModalOpen(true)}
+                              className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <FileText className="w-4 h-4 text-amber-500" />
+                              <span>Post News</span>
+                            </button>
+
+                            <button
+                              onClick={() => exportEmployeesToCSV(employees)}
+                              className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <FileSpreadsheet className="w-4 h-4 text-green-500" />
+                              <span>Export Excel</span>
+                            </button>
+
+                            {isAdmin && (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setIsExcelImportOpen(true);
+                                    setActiveTab('directory');
+                                  }}
+                                  className="p-3 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                                >
+                                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                                  <span>Import Staff</span>
+                                </button>
+                                <button
+                                  onClick={() => setActiveTab('sites')}
+                                  className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                                >
+                                  <MapPin className="w-4 h-4 text-red-500" />
+                                  <span>Manage Sites</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Recent Announcements Card */}
+                        <div className="bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-5 shadow-sm space-y-4">
+                          <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
+                            <h3 className="text-xs font-black uppercase tracking-wider text-slate-400">
+                              Corporate Bulletins
+                            </h3>
+                            <button 
+                              onClick={() => setActiveTab('announcements')}
+                              className="text-[10px] text-blue-600 dark:text-blue-400 font-bold hover:underline"
+                            >
+                              View All
+                            </button>
+                          </div>
+                          
+                          <div className="space-y-3.5 max-h-[180px] overflow-y-auto">
+                            {announcements.slice(0, 2).map(ann => (
+                              <div key={ann.id} className="space-y-1">
+                                <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-200 uppercase tracking-tight">{ann.title}</h4>
+                                <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2">{ann.content}</p>
+                                <span className="text-[8px] text-slate-400 font-bold uppercase block">{new Date(ann.createdAt).toLocaleDateString()}</span>
+                              </div>
+                            ))}
+                            {announcements.length === 0 && (
+                              <p className="text-[10px] text-slate-400 italic">No news posted yet.</p>
+                            )}
+                          </div>
+                        </div>
+
+                      </div>
+
+                      {/* Right Block: Recharts Data Visualization */}
+                      <div className="lg:col-span-8 bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-5 shadow-sm space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-black uppercase tracking-wider text-slate-400">
+                            Employee Distribution by Work Site
+                          </h3>
+                          <span className="text-[9px] text-slate-400 bg-slate-50 dark:bg-slate-900 px-2 py-0.5 rounded-md font-bold uppercase tracking-wider">
+                            Interactive Chart
+                          </span>
+                        </div>
+
+                        {stats.distributionBySite.length > 0 ? (
+                          <div className="space-y-4">
+                            <div className="h-64 w-full">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={stats.distributionBySite} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                  <XAxis dataKey="name" tick={{ fontSize: 10, fill: isDarkMode ? '#94A3B8' : '#475569', fontWeight: 'bold' }} axisLine={false} tickLine={false} />
+                                  <YAxis tick={{ fontSize: 10, fill: isDarkMode ? '#94A3B8' : '#475569' }} axisLine={false} tickLine={false} />
+                                  <Tooltip contentStyle={{ background: isDarkMode ? '#0F172A' : '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', fontSize: '11px' }} />
+                                  <Bar dataKey="count" fill="#2563EB" radius={[8, 8, 0, 0]}>
+                                    {stats.distributionBySite.map((entry, index) => {
+                                      const isSelected = selectedSiteForStaffList === entry.name;
+                                      return (
+                                        <Cell 
+                                          key={`cell-${index}`} 
+                                          fill={isSelected ? '#E2231A' : (index % 2 === 0 ? '#3B82F6' : '#60A5FA')} 
+                                          className="cursor-pointer hover:opacity-80 transition-opacity"
+                                          onClick={() => {
+                                            setSelectedSiteForStaffList(
+                                              selectedSiteForStaffList === entry.name ? null : entry.name
+                                            );
+                                          }}
+                                        />
+                                      );
+                                    })}
+                                  </Bar>
+                                </BarChart>
+                              </ResponsiveContainer>
+                            </div>
+                            
+                            <p className="text-[10px] text-slate-400 text-center italic font-medium">
+                              💡 Tip: Click on any bar to see the staff name list for that work site.
+                            </p>
+
+                            {/* SELECTED SITE STAFF LIST PANEL */}
+                            {selectedSiteForStaffList && (
+                              <div className="mt-4 pt-4 border-t border-slate-150 dark:border-slate-800 animate-fade-in space-y-3">
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-[#E2231A]" />
+                                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                                      Staff List: <span className="text-blue-600 dark:text-blue-400">{selectedSiteForStaffList}</span>
+                                    </h4>
+                                  </div>
+                                  <button
+                                    onClick={() => setSelectedSiteForStaffList(null)}
+                                    className="text-[9px] bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded font-black uppercase tracking-wider cursor-pointer transition-colors"
+                                  >
+                                    Close List
+                                  </button>
+                                </div>
+
+                                {(() => {
+                                  const staffAtSite = employees.filter(e => e.workSites.includes(selectedSiteForStaffList));
+                                  if (staffAtSite.length === 0) {
+                                    return (
+                                      <p className="text-[11px] text-slate-400 italic">No staff members currently assigned to this site.</p>
+                                    );
+                                  }
+                                  return (
+                                    <div className="flex flex-wrap gap-2 max-h-40 overflow-y-auto p-1">
+                                      {staffAtSite.map(emp => (
+                                        <button
+                                          key={emp.email}
+                                          onClick={() => setSelectedColleague(emp)}
+                                          className="px-3 py-1.5 bg-slate-50 hover:bg-blue-50 dark:bg-slate-900/40 dark:hover:bg-blue-950/20 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl text-xs font-bold transition-all border border-slate-200 dark:border-slate-800 cursor-pointer flex items-center gap-2 shadow-xs shrink-0"
+                                          title={`Click to view ${emp.fullName}'s profile`}
+                                        >
+                                          <span className={`w-1.5 h-1.5 rounded-full ${emp.status === 'Active' ? 'bg-green-500' : 'bg-red-500'}`} />
+                                          <span className="truncate max-w-[150px]">{emp.fullName}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="h-64 flex items-center justify-center text-slate-400 text-xs font-bold uppercase">
+                            No site data available for analytics
                           </div>
                         )}
+                      </div>
 
-                        {/* Interactive Photo Frame */}
-                        <div className="mt-4 w-full flex justify-center">
-                          <FlipCard
-                            photoUrl={selectedEmployee.photoUrl}
-                            fullName={selectedEmployee.fullName}
-                            qrValue={simulatedScanUrl}
-                          />
-                        </div>
+                    </div>
 
-                        {/* Details below photo */}
-                        <div className="text-center mt-4">
-                          <h2 className="text-xl font-black text-[#0B1F3A] dark:text-white tracking-tight uppercase leading-snug">
-                            {selectedEmployee.fullName}
-                          </h2>
-                          <p className="text-red-600 font-extrabold text-xs tracking-widest uppercase mt-0.5">
-                            {selectedEmployee.designation}
+                  </div>
+                ) : (
+                  
+                  // ==================== 1B: EMPLOYEE DASHBOARD ====================
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fade-in">
+                    
+                    {/* Left Panel: Digital Card ID Mockup View */}
+                    <div className="lg:col-span-5 flex flex-col items-center">
+                      <div className="bg-white dark:bg-[#0B132B] rounded-3xl border border-slate-150 dark:border-slate-800 p-6 shadow-sm w-full space-y-4 flex flex-col items-center">
+                        <div>
+                          <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 text-center">
+                            Your Virtual Employee Badge
+                          </h3>
+                          <p className="text-[10px] text-slate-500 text-center mt-0.5">
+                            Click/tap card to reveal QR verification face
                           </p>
-                          <p className="text-[10px] text-gray-400 font-bold tracking-widest uppercase mt-1">
-                            {selectedEmployee.site}
-                          </p>
                         </div>
+                        
+                        <DigitalIDCard employee={currentUserProfile} />
+                      </div>
+                    </div>
 
-                        {/* Mini metadata blocks */}
-                        <div className="w-full grid grid-cols-2 gap-2 mt-5 pt-4 border-t border-gray-100 dark:border-slate-800">
-                          <div className="text-center">
-                            <span className="text-[8px] text-gray-400 font-bold uppercase tracking-wider">Employee BAS ID</span>
-                            <p className="text-xs font-mono font-black text-[#0B1F3A] dark:text-slate-300">{selectedEmployee.employeeId}</p>
+                    {/* Right Panel: Announcements & Colleague Site Distribution */}
+                    <div className="lg:col-span-7 space-y-6">
+                      
+                      {/* Active stats */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-white dark:bg-[#0B132B] p-4 rounded-2xl border border-slate-150 dark:border-slate-800 shadow-sm flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/20 flex items-center justify-center text-blue-600">
+                            <MapPin className="w-5 h-5" />
                           </div>
-                          <div className="text-center">
-                            <span className="text-[8px] text-gray-400 font-bold uppercase tracking-wider">JOINED</span>
-                            <p className="text-xs font-mono font-black text-[#0B1F3A] dark:text-slate-300">
-                              {selectedEmployee.dateOfJoining.split(' ').slice(-1)[0] || '2024'}
+                          <div>
+                            <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">Assigned Sites</span>
+                            <span className="text-xs font-extrabold text-slate-850 dark:text-white truncate max-w-[150px] block" title={currentUserProfile.workSites.join(', ')}>
+                              {currentUserProfile.workSites.join(', ')}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setIsCoworkersModalOpen(true)}
+                          className="bg-white dark:bg-[#0B132B] p-4 rounded-2xl border border-slate-150 dark:border-slate-800 shadow-sm hover:shadow-md hover:border-indigo-300 dark:hover:border-indigo-700 transition-all flex items-center justify-between gap-2 text-left cursor-pointer group w-full"
+                          title="Click to view all site coworkers, designation & mobile numbers"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/20 flex items-center justify-center text-indigo-600 group-hover:scale-105 transition-transform shrink-0">
+                              <Users className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block truncate">Total Coworkers</span>
+                              <span className="text-sm font-extrabold text-slate-850 dark:text-white block truncate">
+                                {employees.filter(e => e.status === 'Active' && (currentUserProfile.workSites.includes('All') || currentUserProfile.role === 'Admin' || e.workSites.some(s => currentUserProfile.workSites.includes(s)))).length} Site Colleagues
+                              </span>
+                            </div>
+                          </div>
+                          <div className="px-2.5 py-1 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white rounded-xl text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-colors shrink-0">
+                            <span>View</span>
+                            <ChevronRight className="w-3.5 h-3.5" />
+                          </div>
+                        </button>
+                      </div>
+
+                      {/* Announcement List */}
+                      <div className="bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-5 shadow-sm space-y-4">
+                        <h3 className="text-xs font-black uppercase tracking-wider text-slate-400 border-b border-slate-100 dark:border-slate-800 pb-2">
+                          Recent Company Announcements
+                        </h3>
+                        <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
+                          {announcements.map(ann => (
+                            <div key={ann.id} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-150 dark:border-slate-800 space-y-1.5 relative group">
+                              <div className="flex items-center justify-between gap-2">
+                                <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-200 uppercase tracking-tight line-clamp-1">{ann.title}</h4>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[8px] text-slate-400 font-bold uppercase">{new Date(ann.createdAt).toLocaleDateString()}</span>
+                                  {isAdmin && (
+                                    <button
+                                      onClick={() => handleDeleteAnnouncement(ann.id)}
+                                      className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors cursor-pointer"
+                                      title="Delete Announcement"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-normal">{ann.content}</p>
+                              <span className="text-[8px] text-blue-600 dark:text-blue-400 font-extrabold uppercase tracking-widest block">By: {ann.authorName}</span>
+                            </div>
+                          ))}
+                          {announcements.length === 0 && (
+                            <p className="text-[10px] text-slate-400 italic">No news posted yet.</p>
+                          )}
+                        </div>
+                      </div>
+
+                    </div>
+
+                  </div>
+                )}
+
+              </motion.div>
+            )}
+
+            {/* ==================== 2. TAB: STAFF DIRECTORY ==================== */}
+            {activeTab === 'directory' && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+                id="tab-directory"
+              >
+                
+                 {/* Header title */}
+                <div className="flex items-center gap-4 pb-4 border-b border-slate-150 dark:border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setActiveTab('dashboard')}
+                      className="p-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl transition-all cursor-pointer flex items-center justify-center"
+                      title="Back to Dashboard"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-xl font-black uppercase tracking-wider text-slate-950 dark:text-white">
+                        Staff Member Directory
+                      </h2>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {isAdmin ? 'Complete active/resigned profile index.' : 'Interactive listing of colleagues assigned to your work site(s).'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* EXCEL IMPORT UTILITY PANEL */}
+                <AnimatePresence>
+                  {isExcelImportOpen && isAdmin && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden bg-slate-100 dark:bg-slate-900/60 p-5 rounded-2xl border border-slate-200 dark:border-slate-850 space-y-4"
+                    >
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="text-xs font-black uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                            Bulk Import Staff via Excel / CSV Spreadsheet
+                          </h3>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                            Upload a spreadsheet containing staff records. The system intelligently parses columns. To ensure accuracy, you can include headers such as: <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">fullName</code>, <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">email</code>, <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">employeeId</code>, <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">designation</code>, <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">department</code>, <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">status</code> (Active/Resigned), and <code className="bg-white dark:bg-slate-900 px-1 py-0.5 rounded text-red-500 text-[9px] font-mono">lastDateOfWork</code>.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setIsExcelImportOpen(false)}
+                          className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-400 cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="border-2 border-dashed border-slate-300 dark:border-slate-800 rounded-xl p-6 flex flex-col items-center justify-center text-center bg-white dark:bg-slate-950 relative hover:border-blue-500 transition-colors">
+                          <input 
+                            type="file" 
+                            accept=".xlsx, .xls, .csv" 
+                            onChange={handleExcelImport}
+                            className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                            disabled={importLoading}
+                          />
+                          {importLoading ? (
+                            <div className="space-y-2">
+                              <div className="w-8 h-8 border-4 border-t-blue-500 border-slate-250 rounded-full animate-spin mx-auto" />
+                              <span className="text-[10px] text-slate-500 uppercase font-black tracking-wider animate-pulse block">Processing Spreadsheet...</span>
+                            </div>
+                          ) : (
+                            <div className="space-y-2">
+                              <FileSpreadsheet className="w-10 h-10 text-emerald-500 mx-auto" />
+                              <div>
+                                <span className="text-xs font-black text-slate-800 dark:text-slate-200 uppercase tracking-wider block">Click or Drag Spreadsheet Here</span>
+                                <span className="text-[9px] text-slate-400 uppercase tracking-wider block mt-1">Supports Microsoft Excel (.xlsx, .xls) and standard CSV files</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="bg-white dark:bg-slate-950 p-4 rounded-xl border border-slate-150 dark:border-slate-800 flex flex-col justify-between">
+                          <div className="space-y-2">
+                            <h4 className="text-[10px] font-black uppercase text-slate-700 dark:text-slate-300 tracking-wider">Spreadsheet Template Guide:</h4>
+                            <ul className="text-[10px] text-slate-500 space-y-1 pl-4 list-disc leading-relaxed">
+                              <li><strong>Staff Name</strong> (Required) - e.g. Tan Ah Kow</li>
+                              <li><strong>Designation</strong> (Required) - e.g. Safety Officer</li>
+                              <li><strong>Site</strong> (Optional) - Operational sites e.g. Kallang Site</li>
+                              <li><strong>Role</strong> (Optional) - "Employee" or "Admin" (defaults to Employee)</li>
+                              <li><strong>Email Address</strong> (Required & Unique) - e.g. ahkow@weehur.com.sg</li>
+                              <li><strong>Date of Employment</strong> (Optional) - YYYY-MM-DD format</li>
+                              <li><strong>Date Joined to Site</strong> (Optional) - YYYY-MM-DD format</li>
+                              <li><strong>Remarks</strong> (Optional) - Custom staff status or notes</li>
+                            </ul>
+                          </div>
+
+                          <button
+                            onClick={() => {
+                              // Create and download sample spreadsheet template
+                              const ws = XLSX.utils.json_to_sheet([
+                                {
+                                  "Staff Name": "Tan Ah Kow",
+                                  "Designation": "Safety Officer",
+                                  "Site": "Kallang Site",
+                                  "Role": "Employee",
+                                  "Email Address": "ahkow@weehur.com.sg",
+                                  "Date of Employment": "2024-01-15",
+                                  "Date Joined to Site": "2024-02-01",
+                                  "Remarks": "Completed Safety Level 3 Training"
+                                },
+                                {
+                                  "Staff Name": "Lim Kiat",
+                                  "Designation": "Project Manager",
+                                  "Site": "Changi Airport T5",
+                                  "Role": "Admin",
+                                  "Email Address": "limkiat@weehur.com.sg",
+                                  "Date of Employment": "2022-03-10",
+                                  "Date Joined to Site": "2022-04-15",
+                                  "Remarks": "Overseeing Runway Project"
+                                }
+                              ]);
+                              const wb = XLSX.utils.book_new();
+                              XLSX.utils.book_append_sheet(wb, ws, "Template");
+                              XLSX.writeFile(wb, "WeeHur_Staff_Import_Template.xlsx");
+                            }}
+                            className="w-full mt-3 py-1.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-850 text-slate-700 dark:text-slate-300 rounded-lg text-[9px] font-black uppercase tracking-wider transition-colors border border-slate-150 dark:border-slate-800 cursor-pointer text-center"
+                          >
+                            Download Sample Excel Template
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Search and Dropdown Filter Row */}
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-white dark:bg-[#0B132B] p-4 rounded-2xl border border-slate-150 dark:border-slate-800 shadow-sm">
+                  
+                  <div className="sm:col-span-8 relative">
+                    <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search colleagues by name, staff ID, designation, or remarks..."
+                      className="w-full pl-10 pr-4 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-4 relative flex items-center gap-2">
+                    <Filter className="w-4 h-4 text-slate-400 shrink-0" />
+                    <select
+                      value={selectedSiteFilter}
+                      onChange={(e) => setSelectedSiteFilter(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none"
+                    >
+                      <option value="All">{isAdmin ? 'All Sites' : 'All Allowable Sites'}</option>
+                      {availableSitesFilterList.map(sName => (
+                        <option key={sName} value={sName}>{sName}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* DIRECTORY VIEW TOGGLE (All, Active, Resigned) */}
+                <div className="flex flex-wrap gap-2 pb-1 bg-slate-50 dark:bg-slate-900/20 p-2 rounded-xl border border-slate-150 dark:border-slate-800/80" id="directory-status-selector">
+                  <button
+                    onClick={() => setDirectoryStatusFilter('All')}
+                    className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border ${
+                      directoryStatusFilter === 'All'
+                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 border-slate-900 dark:border-white shadow-sm'
+                        : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    All Staff ({employees.length})
+                  </button>
+                  <button
+                    onClick={() => setDirectoryStatusFilter('Active')}
+                    className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border flex items-center gap-1.5 ${
+                      directoryStatusFilter === 'Active'
+                        ? 'bg-green-600 text-white border-green-600 shadow-sm'
+                        : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                    Active ({employees.filter(e => e.status === 'Active').length})
+                  </button>
+                  <button
+                    onClick={() => setDirectoryStatusFilter('Resigned')}
+                    className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border flex items-center gap-1.5 ${
+                      directoryStatusFilter === 'Resigned'
+                        ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                        : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                    Resigned ({employees.filter(e => e.status === 'Resigned').length})
+                  </button>
+                </div>
+
+                {/* Directory Card Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {filteredEmployeesForActiveUser.map(emp => (
+                    <div 
+                      key={emp.email}
+                      className="bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-4 shadow-sm flex flex-col justify-between hover:shadow-md transition-all relative"
+                    >
+                      {/* Active/Resigned indicator */}
+                      <span className={`absolute top-4 right-4 w-2.5 h-2.5 rounded-full ${
+                        emp.status === 'Active' ? 'bg-green-500' : emp.status === 'Resigned' ? 'bg-red-500' : 'bg-amber-500'
+                      }`} title={emp.status} />
+
+                      <div className="flex gap-3.5">
+                        {hasValidPhoto(emp.photoUrl) ? (
+                          <img 
+                            src={emp.photoUrl} 
+                            alt={emp.fullName}
+                            className="w-14 h-14 rounded-xl object-cover border border-slate-100 dark:border-slate-800 shrink-0"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-14 h-14 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                            <User className="w-7 h-7" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <h3 className="text-xs font-black uppercase text-slate-950 dark:text-white truncate" title={emp.fullName}>
+                            {emp.fullName}
+                          </h3>
+                          <p className="text-[10px] text-red-500 font-bold uppercase tracking-wide truncate">
+                            {emp.designation}
+                          </p>
+                          <p className="text-[9px] text-slate-400 font-semibold truncate">
+                            {emp.email}
+                          </p>
+                          {emp.status === 'Resigned' && (
+                            <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-red-100 dark:bg-red-950/40 text-red-600 dark:text-red-400 tracking-wider">
+                              Resigned
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Brief parameters list */}
+                      <div className="my-3 py-2 border-t border-b border-slate-50 dark:border-slate-800/80 space-y-1 text-[10px] text-slate-500">
+                        <div className="flex justify-between">
+                          <span>Staff ID:</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-300">{emp.employeeId}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Work Site(s):</span>
+                          <span className="font-bold text-blue-600 dark:text-blue-400 truncate max-w-[140px] text-right" title={emp.workSites.join(', ')}>
+                            {emp.workSites.join(', ')}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Date of Employment:</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-300">{emp.dateJoined}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Joined Site Date:</span>
+                          <span className="font-bold text-slate-800 dark:text-slate-300">{emp.dateJoinedProject || 'N/A'}</span>
+                        </div>
+                        {emp.remarks && (
+                          <div className="text-[9px] text-slate-400 bg-slate-50 dark:bg-slate-900/60 p-1.5 rounded border border-slate-100 dark:border-slate-800 mt-1 truncate" title={emp.remarks}>
+                            <strong>Remarks:</strong> {emp.remarks}
+                          </div>
+                        )}
+                        {emp.status === 'Resigned' && (
+                          <div className="flex justify-between text-red-600 dark:text-red-400 font-bold">
+                            <span>Last Working Day:</span>
+                            <span>{emp.lastDateOfWork || 'Not Listed'}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Cards Actions Row */}
+                      <div className="flex items-center gap-1.5 mt-1 pt-1">
+                        <button
+                          onClick={() => setSelectedColleague(emp)}
+                          className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
+                        >
+                          View ID Profile
+                        </button>
+
+                        {isAdmin && (
+                          <>
+                            <button
+                              onClick={() => { setEditingEmployee(emp); setIsEmpModalOpen(true); }}
+                              className="px-2 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteEmployee(emp.email)}
+                              className="px-2 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-950/20 dark:text-red-400 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer flex items-center gap-1"
+                              title="Delete Staff permanently"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Delete</span>
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                    </div>
+                  ))}
+
+                  {filteredEmployeesForActiveUser.length === 0 && (
+                    <div className="col-span-full py-16 text-center">
+                      <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+                      <p className="text-xs font-bold text-slate-400 uppercase">No colleague matches found.</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Try altering search parameters or selected filters.</p>
+                    </div>
+                  )}
+                </div>
+
+              </motion.div>
+            )}
+
+            {/* ==================== 3. TAB: WORK SITES ==================== */}
+            {activeTab === 'sites' && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+                id="tab-sites"
+              >
+                {/* Header Title */}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-150 dark:border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setActiveTab('dashboard')}
+                      className="p-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl transition-all cursor-pointer flex items-center justify-center"
+                      title="Back to Dashboard"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-xl font-black uppercase tracking-wider text-slate-950 dark:text-white">
+                        Work Site Directory
+                      </h2>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        Directory list of corporate operational sectors.
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {isAdmin && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => { setEditingSite(null); setIsSiteModalOpen(true); }}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Create Site</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Site Grid Card list */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  {sites.map(site => {
+                    const siteStaffCount = employees.filter(e => e.workSites.includes(site.name)).length;
+                    const isConfirmingDelete = deletingSiteId === site.id;
+
+                    return (
+                      <div 
+                        key={site.id}
+                        className="bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-5 shadow-sm flex flex-col justify-between hover:shadow-md transition-all h-[170px]"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex justify-between items-start">
+                            <div className="w-9 h-9 rounded-xl bg-blue-50 dark:bg-blue-950/20 flex items-center justify-center text-blue-600">
+                              <MapPin className="w-5 h-5" />
+                            </div>
+                            
+                            {isAdmin && (
+                              <div className="flex items-center gap-1.5">
+                                {isConfirmingDelete ? (
+                                  <div className="flex gap-1">
+                                    <button
+                                      onClick={() => handleDeleteSite(site.id)}
+                                      className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[8px] font-black uppercase tracking-wider cursor-pointer transition-colors"
+                                      title="Confirm Delete"
+                                    >
+                                      Confirm
+                                    </button>
+                                    <button
+                                      onClick={() => setDeletingSiteId(null)}
+                                      className="px-1.5 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-500 rounded text-[8px] font-bold uppercase tracking-wider cursor-pointer transition-colors"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={() => {
+                                        setEditingSite(site);
+                                        setIsSiteModalOpen(true);
+                                      }}
+                                      className="p-1 rounded-lg bg-slate-50 dark:bg-slate-900 hover:bg-blue-50 hover:text-blue-500 dark:hover:bg-blue-950/20 text-slate-400 transition-colors cursor-pointer text-[9px] font-extrabold uppercase tracking-wide px-2"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => setDeletingSiteId(site.id)}
+                                      className="p-1 rounded-lg bg-slate-50 dark:bg-slate-900 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/20 text-slate-400 transition-colors cursor-pointer text-[9px] font-extrabold uppercase tracking-wide px-2"
+                                    >
+                                      Delete
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <h3 className="text-xs font-black uppercase tracking-wider text-slate-950 dark:text-white truncate" title={site.name}>
+                              {site.name}
+                            </h3>
+                            <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-widest mt-0.5 truncate">
+                              Active Operational Sector
                             </p>
                           </div>
                         </div>
 
-                        {/* Card bottom branding bar */}
-                        <div className={`w-full mt-4 py-2 ${selectedEmployee.activeStatus !== false ? 'bg-[#0B1F3A]' : 'bg-red-950'} rounded-xl flex justify-between items-center px-4 text-white`}>
-                          <span className="text-[9px] font-black tracking-widest uppercase">Digital Staff ID</span>
-                          {selectedEmployee.activeStatus !== false ? (
-                            <span className="text-[9px] font-mono text-green-400 flex items-center gap-1 font-bold">
-                              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-ping" />
-                              VERIFIED
-                            </span>
-                          ) : (
-                            <span className="text-[9px] font-mono text-red-400 flex items-center gap-1 font-bold">
-                              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                              INVALID (RESIGNED)
-                            </span>
-                          )}
+                        <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex justify-between items-center text-[10px] mt-auto">
+                          <span className="text-slate-400 font-bold uppercase">Staff Allocated</span>
+                          <span className="font-extrabold text-blue-600 dark:text-blue-400">{siteStaffCount} Employees</span>
                         </div>
                       </div>
-
-                      {/* Download ID Card Mobile trigger */}
-                      <button
-                        onClick={() => downloadIDCardAsPNG(selectedEmployee, 'both')}
-                        className="mt-4 w-full py-3 bg-[#0B1F3A] hover:bg-[#152e4f] text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-md flex items-center justify-center gap-2 active:scale-95 transition-all cursor-pointer"
-                        id="phone-download-card-button"
-                        title="Download Offline Copy of ID Card"
-                      >
-                        <Download className="w-4 h-4" />
-                        <span>Download Offline ID Card</span>
-                      </button>
-
-                      {/* Large Action Button below Card */}
-                      <button
-                        onClick={() => setActiveTab('profile')}
-                        className="mt-3.5 w-full py-4 bg-[#D71920] hover:bg-[#c0161c] text-white rounded-2xl font-black text-xs uppercase tracking-widest shadow-lg shadow-red-200 dark:shadow-none flex items-center justify-center gap-2 active:scale-95 transition-transform"
-                      >
-                        <User className="w-4 h-4" />
-                        <span>VIEW ALL MY DETAILS</span>
-                        <ChevronRight className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
-
-                  {/* TAB 2: DETAILED PROFILE VIEW */}
-                  {activeTab === 'profile' && (
-                    <div className="w-full max-w-xl mx-auto" id="phone-profile-view">
-                      <div className="bg-white dark:bg-[#0B1F3A] p-5 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800 flex flex-col items-center">
-                        <div className="w-20 h-20 rounded-full overflow-hidden border-2 border-[#D71920] mb-3">
-                          <img src={selectedEmployee.photoUrl} alt={selectedEmployee.fullName} className="w-full h-full object-cover" />
-                        </div>
-                        <h3 className="text-base font-black text-slate-800 dark:text-white uppercase tracking-tight text-center">
-                          {selectedEmployee.fullName}
-                        </h3>
-                        <p className="text-xs font-bold text-red-600 uppercase tracking-widest">{selectedEmployee.designation}</p>
-
-                        <div className="w-full mt-5 space-y-3">
-                          <div className="flex justify-between pb-2 border-b border-gray-100 dark:border-gray-800 text-xs">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider">Employee BAS ID</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-300 font-mono">{selectedEmployee.employeeId}</span>
-                          </div>
-                          <div className="flex justify-between pb-2 border-b border-gray-100 dark:border-gray-800 text-xs">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider">Mobile</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-300 font-mono">{selectedEmployee.mobile}</span>
-                          </div>
-                          <div className="flex justify-between pb-2 border-b border-gray-100 dark:border-gray-800 text-xs">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider">Email</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-300 text-right truncate max-w-[150px]">{selectedEmployee.email}</span>
-                          </div>
-                          <div className="flex justify-between pb-2 border-b border-gray-100 dark:border-gray-800 text-xs">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider">Work Site</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-300 text-right truncate max-w-[150px]">{selectedEmployee.site}</span>
-                          </div>
-                          <div className="flex justify-between pb-2 border-b border-gray-100 dark:border-gray-800 text-xs">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider">Joining Date</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-300">{selectedEmployee.dateOfJoining}</span>
-                          </div>
-                          <div className="flex justify-between pb-2 border-b border-gray-100 dark:border-gray-800 text-xs">
-                            <span className="text-gray-400 font-bold uppercase tracking-wider">Nationality</span>
-                            <span className="font-bold text-slate-800 dark:text-slate-300">{selectedEmployee.nationality}</span>
-                          </div>
-                          <div className="bg-red-50 dark:bg-red-950/20 p-3 rounded-2xl border border-red-100 dark:border-red-900/30">
-                            <span className="text-[9px] text-red-500 font-black tracking-widest uppercase block mb-1">Emergency Contact</span>
-                            <p className="text-xs font-black text-red-700 dark:text-red-400 font-mono">{selectedEmployee.emergencyContact}</p>
-                          </div>
-                        </div>
-
-                        {/* Informative Scanner Sharing Explainer */}
-                        <div className="w-full mt-5 p-3.5 bg-slate-50 dark:bg-slate-900/40 rounded-2xl border border-gray-100 dark:border-gray-800 text-center">
-                          <p className="text-[10px] text-gray-500 font-medium leading-relaxed">
-                            🔒 <strong>Privacy Note:</strong> Direct actions (Call, Email, Save vCard) are hidden on your personal profile app. When others scan your physical or digital ID QR code, they will instantly see your details with quick-action buttons to save your contact, dial, or email you.
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 3: CONTACT DIRECTORY */}
-                  {activeTab === 'contact' && (
-                    <div className="w-full max-w-xl mx-auto space-y-3" id="phone-contact-view">
-                      <div className="bg-white dark:bg-[#0B1F3A] p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800">
-                        <h3 className="text-sm font-black text-[#0B1F3A] dark:text-white uppercase tracking-wider mb-3">
-                          Emergency Contacts
-                        </h3>
-                        <div className="space-y-3">
-                          <div className="p-3 bg-red-50 dark:bg-red-950/20 rounded-2xl flex justify-between items-center">
-                            <div>
-                              <p className="text-xs font-black text-red-600 dark:text-red-400">Head Office Helpline</p>
-                              <p className="text-xs font-mono font-bold text-gray-500">+65 6789 1234</p>
-                            </div>
-                            <a href="tel:+6567891234" className="p-2.5 bg-[#D71920] text-white rounded-full">
-                              <Phone className="w-3.5 h-3.5" />
-                            </a>
-                          </div>
-                          <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-2xl flex justify-between items-center">
-                            <div>
-                              <p className="text-xs font-black text-blue-600 dark:text-blue-400">Security Command</p>
-                              <p className="text-xs font-mono font-bold text-gray-500">+65 6888 1111</p>
-                            </div>
-                            <a href="tel:+6568881111" className="p-2.5 bg-[#0B1F3A] text-white rounded-full">
-                              <Phone className="w-3.5 h-3.5" />
-                            </a>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="bg-white dark:bg-[#0B1F3A] p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800">
-                        <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-wider mb-2">
-                          Directory Quick Dial
-                        </h3>
-                        <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                          {accessibleEmployees.map(emp => (
-                            <div key={emp.email} className="py-2.5 flex justify-between items-center">
-                              <div className="flex items-center gap-2">
-                                <img src={emp.photoUrl} alt={emp.fullName} className="w-8 h-8 rounded-full object-cover" />
-                                <div>
-                                  <p className="text-xs font-bold text-slate-800 dark:text-slate-300 leading-tight uppercase">{emp.fullName}</p>
-                                  <p className="text-[9px] text-gray-400 font-semibold uppercase">{emp.designation}</p>
-                                </div>
-                              </div>
-                              <a href={`tel:${emp.mobile}`} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-green-600">
-                                <Phone className="w-4 h-4" />
-                              </a>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 4: APP SETTINGS */}
-                  {activeTab === 'settings' && (
-                    <div className="w-full max-w-xl mx-auto space-y-4" id="phone-settings-view">
-                      <div className="bg-white dark:bg-[#0B1F3A] p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800">
-                        <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-wider mb-4">
-                          Security Settings
-                        </h3>
-
-                        <div className="space-y-3">
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="text-gray-500 font-bold uppercase tracking-wider">Offline Cache</span>
-                            <span className="px-2 py-1 bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-300 text-[10px] font-bold rounded-md">
-                              ENABLED
-                            </span>
-                          </div>
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="text-gray-500 font-bold uppercase tracking-wider">Device Encryption</span>
-                            <span className="px-2 py-1 bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 text-[10px] font-bold rounded-md">
-                              ACTIVE (AES-256)
-                            </span>
-                          </div>
-                          <div className="flex justify-between items-center text-xs">
-                            <span className="text-gray-500 font-bold uppercase tracking-wider">Biometric Lock</span>
-                            <span className="px-2 py-1 bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 text-[10px] font-bold rounded-md">
-                              SECURE ENCLAVE
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {hasFullAccess && (
-                        <div className="bg-white dark:bg-[#0B1F3A] p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800">
-                          <h3 className="text-sm font-black text-slate-800 dark:text-white uppercase tracking-wider mb-3">
-                            Simulate Identity Change
-                          </h3>
-                          <p className="text-[10px] text-gray-400 mb-3 leading-relaxed">
-                            For development purposes, you can simulate logging in as other registered staff identities:
-                          </p>
-                          <div className="space-y-2 max-h-48 overflow-y-auto">
-                            {employees.map(emp => (
-                              <button
-                                key={emp.email}
-                                onClick={() => handleUserChange(emp.email)}
-                                className={`w-full text-left p-2.5 rounded-xl border flex items-center justify-between text-xs transition-colors ${
-                                  currentUser?.email.toLowerCase() === emp.email.toLowerCase()
-                                    ? 'border-[#D71920] bg-red-50/50 dark:bg-red-950/20'
-                                    : 'border-gray-100 hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-900'
-                                }`}
-                              >
-                                <div className="flex items-center gap-2">
-                                  <img src={emp.photoUrl} alt={emp.fullName} className="w-6 h-6 rounded-full object-cover" />
-                                  <div>
-                                    <p className="font-extrabold uppercase text-slate-700 dark:text-slate-300">{emp.fullName}</p>
-                                    <p className="text-[9px] text-gray-400 font-bold">{emp.email}</p>
-                                  </div>
-                                </div>
-                                {currentUser?.email.toLowerCase() === emp.email.toLowerCase() && (
-                                  <span className="text-[9px] font-black text-red-600 tracking-wider">CURRENT</span>
-                                )}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Standalone Sign Out Card */}
-                      <div className="bg-white dark:bg-[#0B1F3A] p-4 rounded-3xl shadow-xl border border-gray-100 dark:border-slate-800">
-                        <button
-                          onClick={triggerLogout}
-                          className="w-full py-2 bg-slate-100 hover:bg-red-100 hover:text-red-600 text-slate-600 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors dark:bg-gray-800 dark:hover:bg-red-950 dark:text-gray-300"
-                        >
-                          <LogOut className="w-3.5 h-3.5" />
-                          <span>End Security Session</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center p-6 text-gray-400">
-                  <AlertCircle className="w-12 h-12 mb-3" />
-                  <p className="font-bold">No active digital ID matches your credentials.</p>
+                    );
+                  })}
                 </div>
-              )}
+
+              </motion.div>
+            )}
+
+            {/* ==================== 4. TAB: ANNOUNCEMENTS ==================== */}
+            {activeTab === 'announcements' && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+                id="tab-announcements"
+              >
+                 {/* Header Title */}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-150 dark:border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setActiveTab('dashboard')}
+                      className="p-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl transition-all cursor-pointer flex items-center justify-center"
+                      title="Back to Dashboard"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-xl font-black uppercase tracking-wider text-slate-950 dark:text-white">
+                        Company Announcements Board
+                      </h2>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        Internal corporate updates and news broadcasts.
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {isAdmin && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setIsAnnounceModalOpen(true)}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Post Announcement</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* News List */}
+                <div className="space-y-4 max-w-3xl">
+                  {announcements.map(ann => (
+                    <div 
+                      key={ann.id}
+                      className="bg-white dark:bg-[#0B132B] rounded-3xl border border-slate-150 dark:border-slate-800 p-6 shadow-sm space-y-3 relative overflow-hidden"
+                    >
+                      <div className="absolute top-0 left-0 w-1.5 h-full bg-blue-600" />
+                      
+                      <div className="flex justify-between items-start gap-4">
+                        <div className="space-y-0.5 flex-1">
+                          <h3 className="text-sm font-black uppercase tracking-tight text-slate-950 dark:text-white">
+                            {ann.title}
+                          </h3>
+                          <div className="flex items-center gap-2 text-[9px] text-slate-400 font-bold uppercase">
+                            <span>Posted on: {new Date(ann.createdAt).toLocaleDateString()}</span>
+                            <span>&bull;</span>
+                            <span className="text-blue-600 dark:text-blue-400">By: {ann.authorName}</span>
+                          </div>
+                        </div>
+                        {isAdmin && (
+                          <button
+                            onClick={() => handleDeleteAnnouncement(ann.id)}
+                            className="p-2 text-slate-400 hover:text-red-600 dark:hover:text-red-400 bg-slate-50 hover:bg-red-50 dark:bg-slate-900 dark:hover:bg-red-950/40 rounded-xl transition-colors cursor-pointer flex items-center justify-center shrink-0"
+                            title="Delete Announcement"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+
+                      <p className="text-xs text-slate-700 dark:text-slate-350 leading-relaxed font-medium">
+                        {ann.content}
+                      </p>
+                    </div>
+                  ))}
+
+                  {announcements.length === 0 && (
+                    <div className="py-16 text-center bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800">
+                      <p className="text-xs font-bold text-slate-400">No active bulletins published.</p>
+                    </div>
+                  )}
+                </div>
+
+              </motion.div>
+            )}
+
+            {/* ==================== 5. TAB: LOGIN AUDIT LOGS (ADMIN ONLY) ==================== */}
+            {activeTab === 'audit' && isAdmin && (
+              <motion.div
+                initial={{ opacity: 0, y: 15 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -15 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+                id="tab-audit"
+              >
+                {/* Header Title */}
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-slate-150 dark:border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => setActiveTab('dashboard')}
+                      className="p-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-400 rounded-xl transition-all cursor-pointer flex items-center justify-center"
+                      title="Back to Dashboard"
+                    >
+                      <ArrowLeft className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-xl font-black uppercase tracking-wider text-slate-950 dark:text-white">
+                        Access Audit Logs (Recent Successful Logins)
+                      </h2>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        Real-time login history monitoring.
+                      </p>
+                    </div>
+                  </div>
+                  
+
+                </div>
+
+                {/* Audit Logs Table */}
+                <div className="bg-white dark:bg-[#0B132B] rounded-3xl border border-slate-150 dark:border-slate-800 shadow-sm overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="bg-slate-50 dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 text-[10px] font-black uppercase tracking-wider text-slate-400">
+                          <th className="px-6 py-4">User Details</th>
+                          <th className="px-6 py-4">Auth Role</th>
+                          <th className="px-6 py-4">Timestamp</th>
+                          <th className="px-6 py-4">Device Reference</th>
+                        </tr>
+                      </thead>
+                      <tbody className="text-xs text-slate-700 dark:text-slate-300 divide-y divide-slate-50 dark:divide-slate-800/85">
+                        {loginHistory.map(log => (
+                          <tr key={log.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/40">
+                            <td className="px-6 py-4">
+                              <p className="font-bold text-slate-950 dark:text-white">{log.fullName}</p>
+                              <p className="text-[10px] text-slate-400">{log.email}</p>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2 py-0.5 rounded text-[8px] font-extrabold uppercase ${
+                                log.role === 'Admin' ? 'bg-red-50 text-red-600 dark:bg-red-950/20' : 'bg-blue-50 text-blue-600 dark:bg-blue-950/20'
+                              }`}>
+                                {log.role}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 font-mono text-[10px] text-slate-500">
+                              {new Date(log.timestamp).toLocaleString()}
+                            </td>
+                            <td className="px-6 py-4 text-[9px] text-slate-400 max-w-[240px] truncate" title={log.deviceInfo}>
+                              {log.deviceInfo}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {loginHistory.length === 0 && (
+                    <div className="py-12 text-center text-slate-400 italic">
+                      No active security login records.
+                    </div>
+                  )}
+                </div>
+
+              </motion.div>
+            )}
+
+          </AnimatePresence>
+        )}
+
+      </main>
+
+      {/* ==================== MODALS MATRIX ==================== */}
+      
+      {/* 1. COLLEAGUE ID DETAIL SHEET */}
+      {selectedColleague && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 dark:bg-slate-950/85 backdrop-blur-xs" id="colleague-profile-modal">
+          <div className="bg-white dark:bg-[#0B132B] rounded-3xl w-full max-w-sm border border-slate-100 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            
+            {/* Front Header */}
+            <div className="flex justify-between items-center px-6 py-4 bg-gradient-to-r from-blue-900 to-slate-900 text-white border-b border-white/10">
+              <span className="text-xs font-black uppercase tracking-wider">Colleague Badge Viewer</span>
+              <button 
+                onClick={() => setSelectedColleague(null)}
+                className="p-1 rounded bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
-          </div>
 
-
-        </div>
-
-        {/* RIGHT COLUMN: REVIEWS, CO-PILOT AND ADMIN PANEL (7 cols) */}
-        {hasFullAccess && (
-          <div className="lg:col-span-7 space-y-8" id="master-console-pane">
-          
-          {/* Section 2: Administrative Directory controls */}
-          <div className="bg-white p-6 rounded-[32px] border border-gray-200 dark:bg-[#0B1F3A] dark:border-slate-800 shadow-sm" id="admin-directory-block">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 dark:border-slate-800 pb-4 mb-6">
-              <div>
-                <span className="text-[10px] font-black text-red-600 uppercase tracking-widest block">ADMIN PANEL</span>
-                <h4 className="text-lg font-black tracking-tight text-slate-800 dark:text-white">
-                  Corporate Employee Registry
-                </h4>
-              </div>
+            <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col items-center">
               
-              {/* Actions */}
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={exportEmployees}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition-all"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Export JSON</span>
-                </button>
-                
-                {hasFullAccess && (
+              <DigitalIDCard employee={selectedColleague} />
+
+              {/* Extra Details sheet */}
+              <div className="w-full space-y-3.5 bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl text-xs border border-slate-150 dark:border-slate-800">
+                <h4 className="font-black text-slate-950 dark:text-white uppercase tracking-wider text-[10px] text-center border-b border-slate-200 dark:border-slate-800 pb-1.5">
+                  Secure Profile Card Details
+                </h4>
+
+                <div className="grid grid-cols-2 gap-x-2 gap-y-3 text-[11px]">
+                  <div className="col-span-2">
+                    <span className="text-slate-400 font-bold block">EMAIL ADDRESS</span>
+                    <span className="font-extrabold text-slate-800 dark:text-slate-200 truncate block" title={selectedColleague.email}>{selectedColleague.email}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 font-bold block">EMPLOYMENT DATE</span>
+                    <span className="font-extrabold text-slate-800 dark:text-slate-200">{selectedColleague.dateJoined}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 font-bold block">DATE JOINED TO SITE</span>
+                    <span className="font-extrabold text-slate-800 dark:text-slate-200">{selectedColleague.dateJoinedProject || 'N/A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 font-bold block">STATUS</span>
+                    <span className={`font-extrabold ${
+                      selectedColleague.status === 'Active' 
+                        ? 'text-green-500' 
+                        : selectedColleague.status === 'Resigned'
+                        ? 'text-red-500'
+                        : 'text-amber-500'
+                    }`}>{selectedColleague.status}</span>
+                  </div>
+                  <div className="col-span-2">
+                    <span className="text-slate-400 font-bold block">REMARKS</span>
+                    <span className="font-extrabold text-slate-800 dark:text-slate-200 block whitespace-pre-wrap">{selectedColleague.remarks || 'No remarks provided'}</span>
+                  </div>
+                  {selectedColleague.status === 'Resigned' && (
+                    <div className="col-span-2 bg-red-500/10 p-2 rounded-lg border border-red-500/20">
+                      <span className="text-red-500 font-black block text-[9px] uppercase tracking-wider">LAST DATE OF WORK</span>
+                      <span className="font-extrabold text-red-600 dark:text-red-400 text-xs">{selectedColleague.lastDateOfWork || 'Not specified'}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {isAdmin && (
+                <div className="w-full flex gap-2">
                   <button
                     onClick={() => {
-                      setFormData({
-                        employeeId: `WH${Math.floor(1000 + Math.random() * 9000)}`,
-                        fullName: '',
-                        designation: '',
-                        department: 'Projects',
-                        mobile: '+65 ',
-                        email: '',
-                        site: siteFilter || 'Weehur Main Site',
-                        nationality: 'Singaporean',
-                        dateOfJoining: new Date().toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' }),
-                        emergencyContact: '+65 ',
-                        photoUrl: '',
-                        activeStatus: true,
-                        isAdmin: false
-                      });
-                      setShowAddModal(true);
+                      const email = selectedColleague.email;
+                      setSelectedColleague(null);
+                      handleAdminResetPassword(email);
                     }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 bg-[#D71920] hover:bg-[#c0161c] text-white rounded-xl text-xs font-bold transition-all shadow-md"
+                    className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
                   >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add Employee</span>
+                    Reset Password
                   </button>
-                )}
-              </div>
-            </div>
-
-            {/* Real-time Validation Statistics Grid */}
-            <div className="grid grid-cols-3 gap-3 mb-6 animate-fade-in" id="admin-stats-dashboard">
-              <div className="bg-slate-50 dark:bg-slate-900/40 p-3.5 rounded-2xl border border-gray-100 dark:border-gray-800/80 flex flex-col justify-between">
-                <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider leading-none">Total Directory</span>
-                <span className="text-xl font-black text-[#0B1F3A] dark:text-white mt-1.5 mb-1 leading-none">{employees.length}</span>
-                <span className="text-[8px] text-gray-400 font-bold uppercase tracking-wider leading-none">Staff</span>
-              </div>
-              <div className="bg-green-50 dark:bg-green-950/10 p-3.5 rounded-2xl border border-green-100/70 dark:border-green-900/20 flex flex-col justify-between">
-                <span className="text-[9px] font-black text-green-600 dark:text-green-400 uppercase tracking-wider leading-none">Confirmed (Valid)</span>
-                <span className="text-xl font-black text-green-600 dark:text-green-400 mt-1.5 mb-1 leading-none" id="valid-staff-count">{employees.filter(e => e.activeStatus !== false).length}</span>
-                <span className="text-[8px] text-green-500 font-bold uppercase tracking-wider leading-none">Valid Cards</span>
-              </div>
-              <div className="bg-red-50 dark:bg-red-950/10 p-3.5 rounded-2xl border border-red-100/70 dark:border-red-900/20 flex flex-col justify-between">
-                <span className="text-[9px] font-black text-red-600 dark:text-red-400 uppercase tracking-wider leading-none">Resigned (Invalid)</span>
-                <span className="text-xl font-black text-red-600 dark:text-red-400 mt-1.5 mb-1 leading-none">{employees.filter(e => e.activeStatus === false).length}</span>
-                <span className="text-[8px] text-red-400 font-bold uppercase tracking-wider leading-none">Invalid Cards</span>
-              </div>
-            </div>
-
-            {/* Workforce Distribution Chart */}
-            <div className="mb-6 p-4 bg-slate-50 dark:bg-slate-900/40 rounded-2xl border border-gray-100 dark:border-gray-800/80">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="p-1.5 bg-red-50 dark:bg-red-950/20 text-[#D71920] rounded-lg">
-                  <Sparkles className="w-4 h-4" />
-                </div>
-                <div>
-                  <h5 className="text-xs font-black text-slate-800 dark:text-white uppercase tracking-wider">Workforce Distribution by Site</h5>
-                  <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">Real-time site assignment statistics</p>
-                </div>
-              </div>
-              <div className="h-48 w-full" id="workforce-distribution-chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={siteDistributionData}
-                    margin={{ top: 5, right: 10, left: -20, bottom: 5 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={isDarkMode ? '#1e293b' : '#f1f5f9'} />
-                    <XAxis 
-                      dataKey="name" 
-                      tick={{ fill: isDarkMode ? '#94a3b8' : '#64748b', fontSize: 9, fontWeight: 700 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis 
-                      tick={{ fill: isDarkMode ? '#94a3b8' : '#64748b', fontSize: 9 }}
-                      axisLine={false}
-                      tickLine={false}
-                      allowDecimals={false}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: isDarkMode ? '#0B1F3A' : '#ffffff',
-                        borderColor: isDarkMode ? '#1e293b' : '#e2e8f0',
-                        borderRadius: '12px',
-                        fontSize: '10px',
-                        fontWeight: 'bold',
-                        color: isDarkMode ? '#f8fafc' : '#0f172a'
-                      }}
-                      itemStyle={{ color: '#D71920' }}
-                      cursor={{ fill: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.02)' }}
-                    />
-                    <Bar dataKey="count" fill="#D71920" radius={[4, 4, 0, 0]} maxBarSize={40}>
-                      {siteDistributionData.map((entry, index) => (
-                        <Cell 
-                          key={`cell-${index}`} 
-                          fill={index % 2 === 0 ? '#D71920' : '#475569'} 
-                        />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            {/* Site Workspace Cards Selector */}
-            <div className="mb-6" id="site-workspace-dashboard">
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest block">
-                  Select Work Site Dashboard
-                </span>
-                {hasFullAccess && (
                   <button
-                    type="button"
-                    onClick={() => setShowAddSiteModal(true)}
-                    className="text-xs font-bold text-[#D71920] hover:text-[#c0161c] flex items-center gap-1 transition-colors"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>Add New Site</span>
-                  </button>
-                )}
-              </div>
-              
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {/* All Locations Card */}
-                <div
-                  onClick={() => setSiteFilter('')}
-                  className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
-                    !siteFilter
-                      ? 'border-[#D71920] bg-red-50/20 dark:bg-red-950/10 shadow-sm'
-                      : 'border-gray-200 dark:border-slate-850 bg-white dark:bg-[#0B1F3A]/20 hover:border-gray-300 dark:hover:border-slate-700'
-                  }`}
-                >
-                  <div className="flex justify-between items-start">
-                    <div className={`p-2 rounded-xl ${!siteFilter ? 'bg-red-100 dark:bg-red-950/40 text-[#D71920]' : 'bg-slate-100 dark:bg-slate-900 text-slate-500'}`}>
-                      <Globe className="w-4 h-4" />
-                    </div>
-                    <span className="text-[10px] font-mono font-black text-slate-500">{employees.length}</span>
-                  </div>
-                  <div className="mt-3">
-                    <p className="font-extrabold text-xs text-slate-805 dark:text-slate-200">ALL LOCATIONS</p>
-                    <p className="text-[9px] text-gray-400 font-bold uppercase mt-0.5">Entire Directory</p>
-                  </div>
-                </div>
-
-                {/* Individual Site Cards */}
-                {sitesList.map(siteName => {
-                  const siteStaffCount = employees.filter(e => e.site === siteName).length;
-                  const isSelected = siteFilter === siteName;
-                  return (
-                    <div
-                      key={siteName}
-                      onClick={() => setSiteFilter(siteName)}
-                      className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
-                        isSelected
-                          ? 'border-[#D71920] bg-red-50/20 dark:bg-red-950/10 shadow-sm'
-                          : 'border-gray-200 dark:border-slate-850 bg-white dark:bg-[#0B1F3A]/20 hover:border-gray-300 dark:hover:border-slate-700'
-                      }`}
-                    >
-                      <div className="flex justify-between items-start">
-                        <div className={`p-2 rounded-xl ${isSelected ? 'bg-red-100 dark:bg-red-950/40 text-[#D71920]' : 'bg-slate-100 dark:bg-slate-900 text-slate-500'}`}>
-                          <MapPin className="w-4 h-4" />
-                        </div>
-                        <div className="flex items-center gap-1">
-                          {hasFullAccess && (
-                            <>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSiteToEdit(siteName);
-                                  setEditedSiteName(siteName);
-                                  setShowEditSiteModal(true);
-                                }}
-                                className="p-1 text-gray-400 hover:text-[#D71920] hover:bg-red-50 dark:hover:bg-red-950/20 rounded transition-colors"
-                                title="Edit site name"
-                              >
-                                <Edit2 className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSite(siteName);
-                                }}
-                                className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/20 rounded transition-colors"
-                                title="Delete site"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </>
-                          )}
-                          <span className="text-[10px] font-mono font-black text-slate-500">{siteStaffCount}</span>
-                        </div>
-                      </div>
-                      <div className="mt-3">
-                        <p className="font-extrabold text-xs text-slate-805 dark:text-slate-200 truncate uppercase" title={siteName}>
-                          {siteName}
-                        </p>
-                        <p className="text-[9px] text-gray-400 font-bold uppercase mt-0.5">Active Workspace</p>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {/* Add Site Dotted Card (Only for Admins) */}
-                {hasFullAccess && (
-                  <div
-                    onClick={() => setShowAddSiteModal(true)}
-                    className="p-4 rounded-2xl border-2 border-dashed border-gray-200 dark:border-slate-800 hover:border-[#D71920] hover:bg-slate-50 dark:hover:bg-slate-900/10 transition-all cursor-pointer flex flex-col justify-center items-center text-center group"
-                  >
-                    <div className="p-2 bg-slate-100 dark:bg-slate-900 text-slate-400 group-hover:text-[#D71920] rounded-xl transition-colors">
-                      <Plus className="w-4 h-4" />
-                    </div>
-                    <p className="mt-2 font-extrabold text-[11px] text-slate-500 group-hover:text-[#D71920]">NEW SITE</p>
-                    <p className="text-[8px] text-gray-400 font-bold uppercase mt-0.5">Expand Workspace</p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Directory list searching & filtering */}
-            <div className="mb-4 flex flex-col md:flex-row gap-3">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
-                <input
-                  type="text"
-                  placeholder="Search staff members by name, ID number..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-red-500"
-                />
-              </div>
-              <div className="w-full md:w-56">
-                <select
-                  value={siteFilter}
-                  onChange={(e) => setSiteFilter(e.target.value)}
-                  className="w-full px-3 py-3 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer"
-                >
-                  <option value="">All Site Locations</option>
-                  {sitesList.map(siteName => (
-                    <option key={siteName} value={siteName}>
-                      🏢 {siteName}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            {/* List Table */}
-            <div className="overflow-x-auto" id="employees-table">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-gray-100 dark:border-slate-800 text-[10px] text-gray-400 font-extrabold uppercase tracking-wider">
-                    <th className="py-3 px-3">Staff Profile</th>
-                    <th className="py-3 px-3">Employee BAS ID</th>
-                    <th className="py-3 px-3">Site Location</th>
-                    <th className="py-3 px-3">Access Role</th>
-                    <th className="py-3 px-3">Status</th>
-                    <th className="py-3 px-3 text-right">Control</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 dark:divide-slate-800/60 text-xs">
-                  {filteredEmployees.map(emp => (
-                    <tr
-                      key={emp.email}
-                      className={`hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors cursor-pointer ${
-                        selectedEmployee?.email === emp.email ? 'bg-red-50/20 dark:bg-red-950/10' : ''
-                      }`}
-                      onClick={() => setSelectedEmployee(emp)}
-                    >
-                      <td className="py-3 px-3">
-                        <div className="flex items-center gap-3">
-                          <img src={emp.photoUrl} alt={emp.fullName} className="w-9 h-9 rounded-full object-cover border border-gray-200" />
-                          <div>
-                            <p className="font-extrabold uppercase text-slate-800 dark:text-slate-200">{emp.fullName}</p>
-                            <p className="text-[10px] text-gray-400 font-semibold">{emp.email}</p>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-3 px-3 font-mono font-bold text-slate-600 dark:text-slate-400">
-                        {emp.employeeId}
-                      </td>
-                      <td className="py-3 px-3">
-                        <span className="text-gray-500 dark:text-gray-400 font-extrabold uppercase text-[10px] bg-slate-100 dark:bg-slate-900/50 px-2 py-1 rounded-md font-mono tracking-wider truncate max-w-[150px] inline-block" title={emp.site}>
-                          {emp.site || 'N/A'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3">
-                        <span className={`text-[9px] font-black uppercase px-2 py-1 rounded-md tracking-wider ${
-                          emp.isAdmin 
-                            ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-200/50 dark:border-amber-900/20' 
-                            : 'bg-slate-100 dark:bg-slate-900 text-slate-500'
-                        }`}>
-                          {emp.isAdmin ? '🔑 Admin' : '👤 Staff'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleEmployeeActive(emp);
-                          }}
-                          disabled={!hasFullAccess}
-                          className={`px-2.5 py-1 rounded-full text-[9px] font-extrabold uppercase tracking-wider transition-colors ${
-                            emp.activeStatus
-                              ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-400'
-                              : 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-400'
-                          }`}
-                          title={hasFullAccess ? "Click to toggle employment status" : "Employment status"}
-                        >
-                          {emp.activeStatus ? 'CONFIRMED' : 'RESIGNED'}
-                        </button>
-                      </td>
-                      <td className="py-3 px-3 text-right">
-                        <div className="flex justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            onClick={() => handleEditClick(emp)}
-                            className="p-1.5 hover:bg-slate-100 dark:hover:bg-gray-800 rounded-lg text-blue-600 transition-colors"
-                            title="Edit Record"
-                            disabled={!hasFullAccess}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => handleDeleteClick(emp.email)}
-                            className="p-1.5 hover:bg-slate-100 dark:hover:bg-gray-800 rounded-lg text-red-500 transition-colors"
-                            title="Delete Record"
-                            disabled={!hasFullAccess}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredEmployees.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="text-center py-8 text-gray-400 font-semibold">
-                        No employees found matching the search criteria.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {!hasFullAccess ? (
-              <div className="mt-4 p-3.5 bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 rounded-xl text-[10px] font-bold flex items-center gap-2 border border-amber-100 dark:border-amber-950/30">
-                <Shield className="w-4 h-4 shrink-0" />
-                <span>Individual Mode: You can only see your own profile details. Admin access is required to see all staff details.</span>
-              </div>
-            ) : (
-              <div className="mt-4 p-3.5 bg-green-50 dark:bg-green-950/20 text-green-700 dark:text-green-400 rounded-xl text-[10px] font-bold flex items-center gap-2 border border-green-100 dark:border-green-950/30">
-                <Shield className="w-4 h-4 shrink-0" />
-                <span>Super Admin Mode: Full database, role movement, and site controls authorized.</span>
-              </div>
-            )}
-          </div>
-        </div>
-        )}
-      </div>
-
-      {/* FOOTER BAR */}
-      <footer className="mt-12 border-t border-gray-200 dark:border-gray-800 py-6 text-center text-[11px] text-gray-400 dark:bg-[#0B1F3A]/40" id="main-footer">
-        <p className="font-semibold tracking-wider text-slate-500 dark:text-slate-400">WEEHUR DIGITAL IDENTITY CO-PILOT</p>
-        <p className="mt-1">Real-time encryption keys secured. Firebase Firestore Cloud synchronized.</p>
-        <p className="mt-2 text-gray-500">© 2026 Weehur Construction. All rights reserved.</p>
-      </footer>
-
-      {/* ADD / EDIT EMPLOYEE MODAL DIALOGS */}
-      {(showAddModal || showEditModal) && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" id="employee-editor-modal">
-          <div className="bg-white dark:bg-[#0B1F3A] rounded-[32px] shadow-2xl max-w-lg w-full overflow-hidden border border-gray-200 dark:border-slate-800">
-            
-            {/* Modal Header */}
-            <div className="bg-[#0B1F3A] dark:bg-slate-900 px-6 py-4 text-white flex justify-between items-center">
-              <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wider">
-                <Users className="w-5 h-5 text-red-500" />
-                <span>{showAddModal ? 'Register New Staff Member' : 'Modify Staff Record'}</span>
-              </div>
-              <button
-                onClick={() => {
-                  setShowAddModal(false);
-                  setShowEditModal(false);
-                }}
-                className="text-white/80 hover:text-white text-xs font-bold uppercase tracking-widest"
-              >
-                Cancel
-              </button>
-            </div>
-
-            {/* Modal Form */}
-            <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Employee BAS ID *</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.employeeId}
-                    onChange={(e) => setFormData({ ...formData, employeeId: e.target.value.toUpperCase() })}
-                    placeholder="e.g. WH1234"
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Full Name *</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.fullName}
-                    onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
-                    placeholder="e.g. CHAKRAVARTHI G"
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold uppercase focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Designation *</label>
-                <input
-                  type="text"
-                  required
-                  value={formData.designation}
-                  onChange={(e) => setFormData({ ...formData, designation: e.target.value })}
-                  placeholder="e.g. PROJECT ENGINEER"
-                  className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold uppercase focus:outline-none focus:ring-2 focus:ring-red-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Corporate Email *</label>
-                  <input
-                    type="email"
-                    required
-                    disabled={showEditModal} // Primary key / Document ID in Firebase cannot change
-                    value={formData.email}
-                    onChange={(e) => setFormData({ ...formData, email: e.target.value.toLowerCase() })}
-                    placeholder="e.g. user@weehur.com.sg"
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-semibold disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Mobile Phone *</label>
-                  <input
-                    type="text"
-                    required
-                    value={formData.mobile}
-                    onChange={(e) => setFormData({ ...formData, mobile: e.target.value })}
-                    placeholder="e.g. +65 9123 4567"
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-semibold focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Primary Work Site *</label>
-                  <select
-                    value={formData.site || ''}
-                    onChange={(e) => setFormData({ ...formData, site: e.target.value })}
-                    required
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold uppercase focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer text-xs"
-                  >
-                    <option value="" disabled>Select Work Site</option>
-                    {sitesList.map(s => (
-                      <option key={s} value={s}>{s}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Emergency Contact Number</label>
-                  <input
-                    type="text"
-                    value={formData.emergencyContact}
-                    onChange={(e) => setFormData({ ...formData, emergencyContact: e.target.value })}
-                    placeholder="e.g. +65 6789 1234"
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-mono font-bold focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Staff Photo *</label>
-                
-                {/* Drag-and-drop Upload Area */}
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsDraggingPhoto(true);
-                  }}
-                  onDragLeave={() => setIsDraggingPhoto(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setIsDraggingPhoto(false);
-                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                      handlePhotoFile(e.dataTransfer.files[0]);
-                    }
-                  }}
-                  onClick={() => document.getElementById('photo-file-input')?.click()}
-                  className={`border-2 border-dashed rounded-2xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-all ${
-                    isDraggingPhoto
-                      ? 'border-[#D71920] bg-red-50/30 dark:bg-red-950/10'
-                      : 'border-gray-200 hover:border-[#D71920] dark:border-slate-850 hover:bg-slate-50 dark:hover:bg-slate-900/30'
-                  }`}
-                  id="photo-drag-drop-zone"
-                >
-                  <input
-                    type="file"
-                    id="photo-file-input"
-                    accept="image/*"
-                    onChange={(e) => {
-                      if (e.target.files && e.target.files[0]) {
-                        handlePhotoFile(e.target.files[0]);
-                      }
+                    onClick={() => {
+                      const email = selectedColleague.email;
+                      setSelectedColleague(null);
+                      handleDeleteEmployee(email);
                     }}
-                    className="hidden"
-                  />
-                  
-                  {formData.photoUrl ? (
-                    <div className="flex items-center gap-3 w-full">
-                      <img
-                        src={formData.photoUrl}
-                        alt="Staff Preview"
-                        className="w-12 h-12 rounded-full object-cover border border-gray-200 dark:border-slate-700 shrink-0"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=400&auto=format&fit=crop&q=80';
-                        }}
-                      />
-                      <div className="text-left flex-1 min-w-0">
-                        <p className="font-extrabold text-slate-700 dark:text-slate-300 truncate">Photo successfully loaded</p>
-                        <p className="text-[10px] text-gray-400 font-semibold uppercase">Drag or Click to replace photo</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setFormData(prev => ({ ...prev, photoUrl: '' }));
-                        }}
-                        className="p-1.5 hover:bg-red-50 dark:hover:bg-red-950/30 text-red-500 rounded-lg shrink-0"
-                        title="Remove photo"
-                        id="remove-photo-button"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <Camera className="w-8 h-8 text-gray-300 mb-1.5" />
-                      <p className="font-bold text-slate-700 dark:text-slate-300">
-                        Drag & drop staff photo, or <span className="text-[#D71920] underline">browse computer</span>
-                      </p>
-                      <p className="text-[9px] text-gray-400 font-bold uppercase mt-1">Supports PNG, JPG, WEBP up to 1.5MB</p>
-                    </>
-                  )}
+                    className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
+                  >
+                    Delete Profile
+                  </button>
                 </div>
+              )}
 
-                {/* Optional URL manual override input */}
-                <div className="mt-2">
-                  <span className="text-[9px] text-gray-400 font-extrabold uppercase tracking-wider block mb-1">
-                    Or Paste External Photo URL
-                  </span>
-                  <input
-                    type="url"
-                    value={formData.photoUrl || ''}
-                    onChange={(e) => setFormData({ ...formData, photoUrl: e.target.value })}
-                    placeholder="https://images.unsplash.com/photo-..."
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 text-[10px] font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Nationality</label>
-                  <input
-                    type="text"
-                    value={formData.nationality}
-                    onChange={(e) => setFormData({ ...formData, nationality: e.target.value })}
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Joining Date</label>
-                  <input
-                    type="text"
-                    value={formData.dateOfJoining}
-                    onChange={(e) => setFormData({ ...formData, dateOfJoining: e.target.value })}
-                    placeholder="e.g. 12 Jan 2020"
-                    className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-red-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">Employment Status *</label>
-                <select
-                  value={formData.activeStatus !== false ? 'confirmed' : 'resigned'}
-                  onChange={(e) => setFormData({ ...formData, activeStatus: e.target.value === 'confirmed' })}
-                  className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer text-xs uppercase"
-                  id="active-status-select"
-                >
-                  <option value="confirmed">🟢 Confirmed Staff (Valid Digital ID)</option>
-                  <option value="resigned">🔴 Resigned Staff (Invalid / Revoked Digital ID)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">System Access / Role *</label>
-                <select
-                  value={formData.isAdmin ? 'admin' : 'staff'}
-                  onChange={(e) => setFormData({ ...formData, isAdmin: e.target.value === 'admin' })}
-                  className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold focus:outline-none focus:ring-2 focus:ring-red-500 cursor-pointer text-xs uppercase"
-                  id="access-role-select"
-                >
-                  <option value="staff">👤 Staff Member (Restricted to own ID only)</option>
-                  <option value="admin">🔑 Super Admin (Full access to all controls)</option>
-                </select>
-              </div>
-
-              <div className="pt-4 flex justify-end gap-3 border-t border-gray-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddModal(false);
-                    setShowEditModal(false);
-                  }}
-                  className="px-5 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-slate-700 dark:text-slate-200 font-bold rounded-xl uppercase transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 bg-[#D71920] hover:bg-[#c0161c] text-white font-bold rounded-xl uppercase tracking-wider shadow-md transition-colors"
-                >
-                  Save Employee
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ADD NEW SITE MODAL */}
-      {showAddSiteModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" id="add-site-modal">
-          <div className="bg-white dark:bg-[#0B1F3A] rounded-[32px] shadow-2xl max-w-sm w-full overflow-hidden border border-gray-200 dark:border-slate-800">
-            {/* Modal Header */}
-            <div className="bg-[#0B1F3A] dark:bg-slate-900 px-6 py-4 text-white flex justify-between items-center">
-              <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wider">
-                <MapPin className="w-5 h-5 text-red-500" />
-                <span>Create New Work Site</span>
-              </div>
-              <button
-                onClick={() => {
-                  setShowAddSiteModal(false);
-                  setNewSiteName('');
-                }}
-                className="text-white/80 hover:text-white text-xs font-bold uppercase tracking-widest"
-              >
-                Cancel
-              </button>
             </div>
-
-            {/* Modal Body / Form */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const trimmed = newSiteName.trim();
-                if (!trimmed) {
-                  showToast('Site name cannot be empty.', 'error');
-                  return;
-                }
-                if (sitesList.some(s => s.toLowerCase() === trimmed.toLowerCase())) {
-                  showToast('This site name already exists.', 'error');
-                  return;
-                }
-                setCustomSites(prev => [...prev, trimmed]);
-                setSiteFilter(trimmed); // Auto select the new site
-                setShowAddSiteModal(false);
-                setNewSiteName('');
-                showToast(`Work site "${trimmed}" added successfully!`, 'success');
-              }}
-              className="p-6 space-y-4 text-xs"
-            >
-              <div>
-                <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">New Site Name *</label>
-                <input
-                  type="text"
-                  required
-                  value={newSiteName}
-                  onChange={(e) => setNewSiteName(e.target.value)}
-                  placeholder="e.g. Tuas South Yard"
-                  className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold uppercase focus:outline-none focus:ring-2 focus:ring-red-500 text-xs"
-                  autoFocus
-                />
-              </div>
-
-              <div className="pt-4 flex justify-end gap-3 border-t border-gray-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddSiteModal(false);
-                    setNewSiteName('');
-                  }}
-                  className="px-5 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-slate-700 dark:text-slate-200 font-bold rounded-xl uppercase transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 bg-[#D71920] hover:bg-[#c0161c] text-white font-bold rounded-xl uppercase tracking-wider shadow-md transition-colors"
-                >
-                  Create Site
-                </button>
-              </div>
-            </form>
           </div>
         </div>
       )}
 
-      {/* EDIT SITE MODAL */}
-      {showEditSiteModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" id="edit-site-modal">
-          <div className="bg-white dark:bg-[#0B1F3A] rounded-[32px] shadow-2xl max-w-sm w-full overflow-hidden border border-gray-200 dark:border-slate-800">
-            {/* Modal Header */}
-            <div className="bg-[#0B1F3A] dark:bg-slate-900 px-6 py-4 text-white flex justify-between items-center">
-              <div className="flex items-center gap-2 text-sm font-black uppercase tracking-wider">
-                <Edit2 className="w-4 h-4 text-red-500" />
-                <span>Rename Work Site</span>
-              </div>
-              <button
-                onClick={() => {
-                  setShowEditSiteModal(false);
-                  setSiteToEdit('');
-                  setEditedSiteName('');
-                }}
-                disabled={isUpdatingSite}
-                className="text-white/80 hover:text-white text-xs font-bold uppercase tracking-widest disabled:opacity-50"
-              >
-                Cancel
-              </button>
-            </div>
+      {/* 2. ADMIN REGISTER/EDIT STAFF MODAL */}
+      <AddEmployeeModal 
+        isOpen={isEmpModalOpen}
+        onClose={() => { setIsEmpModalOpen(false); setEditingEmployee(null); }}
+        onSave={handleSaveEmployee}
+        editingEmployee={editingEmployee}
+        sites={sites}
+      />
 
-            {/* Modal Body / Form */}
-            <form onSubmit={handleEditSiteName} className="p-6 space-y-4 text-xs">
-              <div>
-                <p className="text-gray-500 dark:text-slate-400 font-medium mb-3">
-                  You are editing the site <strong className="text-slate-800 dark:text-white font-black uppercase font-mono bg-slate-100 dark:bg-slate-900 px-1.5 py-0.5 rounded">{siteToEdit}</strong>.
-                </p>
-                <label className="block text-gray-400 font-bold uppercase tracking-wider mb-1">New Site Name *</label>
-                <input
-                  type="text"
-                  required
-                  value={editedSiteName}
-                  onChange={(e) => setEditedSiteName(e.target.value)}
-                  placeholder="e.g. New Yard Location"
-                  className="w-full p-2.5 bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-800 rounded-xl font-bold uppercase focus:outline-none focus:ring-2 focus:ring-red-500 text-xs"
-                  autoFocus
-                  disabled={isUpdatingSite}
-                />
-                
-                {employees.filter(e => e.site === siteToEdit).length > 0 && (
-                  <div className="mt-3 p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 text-amber-800 dark:text-amber-300 rounded-xl flex gap-2">
-                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-extrabold uppercase text-[10px]">Cascade Transfer Warning</p>
-                      <p className="mt-0.5 font-medium text-[10px]">
-                        <strong>{employees.filter(e => e.site === siteToEdit).length} staff member(s)</strong> currently assigned to this site will be automatically transferred to the renamed site location in the database.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
+      {/* 3. ADMIN ADD SITES MODAL */}
+      <AddSiteModal 
+        isOpen={isSiteModalOpen}
+        onClose={() => { setIsSiteModalOpen(false); setEditingSite(null); }}
+        onSave={handleSaveSite}
+        editingSite={editingSite}
+      />
 
-              <div className="pt-4 flex justify-end gap-3 border-t border-gray-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowEditSiteModal(false);
-                    setSiteToEdit('');
-                    setEditedSiteName('');
-                  }}
-                  disabled={isUpdatingSite}
-                  className="px-5 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-slate-700 dark:text-slate-200 font-bold rounded-xl uppercase transition-colors disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isUpdatingSite}
-                  className="px-6 py-2.5 bg-[#D71920] hover:bg-[#c0161c] text-white font-bold rounded-xl uppercase tracking-wider shadow-md transition-colors flex items-center gap-1.5 disabled:opacity-75"
-                >
-                  {isUpdatingSite ? (
-                    <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Updating...</span>
-                    </>
-                  ) : (
-                    <span>Rename Site</span>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* 4. ADMIN ADD ANNOUNCEMENT MODAL */}
+      <AddAnnouncementModal 
+        isOpen={isAnnounceModalOpen}
+        onClose={() => setIsAnnounceModalOpen(false)}
+        onSave={handleCreateAnnouncement}
+      />
+
+      {/* 5. SITE COWORKERS DIRECTORY MODAL */}
+      <CoworkersModal 
+        isOpen={isCoworkersModalOpen}
+        onClose={() => setIsCoworkersModalOpen(false)}
+        currentUserProfile={currentUserProfile}
+        employees={employees}
+        onSelectColleague={(emp) => {
+          setSelectedColleague(emp);
+          setIsCoworkersModalOpen(false);
+        }}
+      />
+
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
   );
 }

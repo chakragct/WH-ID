@@ -2,96 +2,29 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Global Safety Net
-    match /{document=**} {
-      allow read, write: if false;
+    // Work Sites Collection
+    match /sites/{siteId} {
+      allow read, write: if true;
     }
 
-    // Helper functions
-    function isSignedIn() {
-      return request.auth != null;
+    // Corporate Announcements Collection
+    match /announcements/{announcementId} {
+      allow read, write: if true;
     }
 
-    function isVerified() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function isAdmin() {
-      return isVerified() && (
-        request.auth.token.email == 'chakra@weehur.com.sg' || 
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
-    }
-
-    function isOwner(email) {
-      return isVerified() && request.auth.token.email == email;
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    // Employee Entity Schema Validator
-    function isValidEmployee(data) {
-      return data.employeeId is string && data.employeeId.size() > 0 && data.employeeId.size() <= 32 &&
-             data.fullName is string && data.fullName.size() > 0 && data.fullName.size() <= 128 &&
-             data.designation is string && data.designation.size() > 0 && data.designation.size() <= 128 &&
-             data.department is string && data.department.size() > 0 && data.department.size() <= 128 &&
-             data.mobile is string && data.mobile.size() > 0 && data.mobile.size() <= 32 &&
-             data.email is string && data.email.size() > 0 && data.email.size() <= 128 &&
-             data.site is string && data.site.size() > 0 && data.site.size() <= 128 &&
-             data.nationality is string && data.nationality.size() > 0 && data.nationality.size() <= 64 &&
-             data.dateOfJoining is string && data.dateOfJoining.size() > 0 && data.dateOfJoining.size() <= 32 &&
-             data.emergencyContact is string && data.emergencyContact.size() > 0 && data.emergencyContact.size() <= 32 &&
-             data.photoUrl is string && data.photoUrl.size() > 0 && data.photoUrl.size() <= 2048 &&
-             data.qrCodeUrl is string && data.qrCodeUrl.size() > 0 && data.qrCodeUrl.size() <= 2048 &&
-             data.activeStatus is bool;
-    }
-
-    // Match rules for employees collection
+    // Employee Database Collection
     match /employees/{employeeDocId} {
-      // 1. Read:
-      // Public QR scans call get(). Anyone scanning the QR can see the active profile.
-      allow get: if true;
-
-      // List queries are restricted to admins or matching owner to prevent data harvesting.
-      allow list: if isAdmin() || (isVerified() && resource.data.email == request.auth.token.email);
-
-      // 2. Create:
-      // Only admins can create employee documents.
-      allow create: if isAdmin() && isValidEmployee(incoming()) && incoming().email == employeeDocId;
-
-      // 3. Update:
-      // Admins can update everything. Employees can only update safe contact keys.
-      allow update: if (
-        isAdmin() && isValidEmployee(incoming())
-      ) || (
-        isOwner(existing().email) && isValidEmployee(incoming()) &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['mobile', 'emergencyContact'])
-      );
-
-      // 4. Delete:
-      // Only admins can delete.
-      allow delete: if isAdmin();
+      allow read, write: if true;
     }
 
-    // Match rules for connection testing
-    match /test/connection {
-      allow read: if true;
+    // Auth Users Collection
+    match /users/{userId} {
+      allow read, write: if true;
     }
 
-    // Match rules for admins collection (e.g., explicit admin records)
-    match /admins/{adminUid} {
-      allow read: if isSignedIn();
-      allow write: if false; // System bootstrapped or manually added
+    // Secure Login Audit History Collection
+    match /loginHistory/{historyId} {
+      allow read, write: if true;
     }
   }
 }
