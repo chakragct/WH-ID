@@ -34,3 +34,11 @@
 .animate-spin-slow {
   animation: spin-slow 10s linear infinite;
 }
+
+@media print {
+  body {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}
+

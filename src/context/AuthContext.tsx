@@ -26,6 +26,8 @@ interface AuthContextType {
   currentUser: User | null;
   currentUserProfile: Employee | null;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
+  canEdit: boolean;
   loading: boolean;
   error: string | null;
   login: (email: string, password: string) => Promise<void>;
@@ -68,13 +70,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // Make sure superadmin email lower always gets Admin status
         if (isSuperAdmin) {
           empData.role = 'Admin';
-          if (empData.fullName === 'Super Admin') {
-            empData.fullName = 'Chakravarthy';
-            try {
-              await setDoc(empDocRef, { fullName: 'Chakravarthy' }, { merge: true });
-            } catch (e) {
-              console.error('Failed to update Super Admin name to Chakravarthy:', e);
-            }
+          if (!empData.workSites || empData.workSites.length === 0) {
+            empData.workSites = ['Corporate'];
           }
         }
         setCurrentUserProfile({ ...empData, id: empSnap.id });
@@ -87,11 +84,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           fullName: 'Chakravarthy',
           photoUrl: '',
           email: emailLower,
-          phone: '+65 6250 1234',
-          designation: 'Managing Director',
+          phone: '+65 91339323',
+          designation: 'Senior Admin',
           department: 'Management',
           company: 'WeeHur Construction',
-          workSites: ['Site A', 'Site B', 'Site C', 'Site D'],
+          workSites: ['Corporate'],
           status: 'Active',
           dateJoined: '2020-01-01',
           role: 'Admin'
@@ -548,11 +545,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const isSuperAdmin = (currentUserProfile?.email?.toLowerCase() === 'chakra@weehur.com.sg') || (currentUser?.email?.toLowerCase() === 'chakra@weehur.com.sg');
+  const canEdit = isSuperAdmin || isAdmin;
+
   return (
     <AuthContext.Provider value={{
       currentUser,
       currentUserProfile,
       isAdmin,
+      isSuperAdmin,
+      canEdit,
       loading,
       error,
       login,

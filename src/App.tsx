@@ -36,7 +36,13 @@ import {
   ArrowLeft,
   Home,
   Trash2,
-  Phone
+  Phone,
+  CheckSquare,
+  ChevronDown,
+  ChevronUp,
+  Edit3,
+  Table,
+  LayoutGrid
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -48,7 +54,8 @@ import {
   ResponsiveContainer, 
   Cell, 
   PieChart, 
-  Pie 
+  Pie,
+  LabelList
 } from 'recharts';
 
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -62,20 +69,27 @@ import {
   addEmployee, 
   updateEmployee, 
   deleteEmployee, 
+  deleteEmployeesBatch,
+  cleanAndDeduplicateEmployees,
   fetchAnnouncements, 
   addAnnouncement, 
+  updateAnnouncement,
   deleteAnnouncement,
   fetchLoginHistory,
   seedDatabaseIfEmpty
 } from './services/dbService';
 import { Employee, WorkSite, Announcement, LoginHistoryEntry } from './types';
 import { exportEmployeesToCSV } from './utils/export';
+import { formatDateValue, displayFormattedDate } from './utils/dateUtils';
 import DigitalIDCard from './components/DigitalIDCard';
 import AddEmployeeModal from './components/AddEmployeeModal';
 import AddSiteModal from './components/AddSiteModal';
 import AddAnnouncementModal from './components/AddAnnouncementModal';
+import { FormattedAnnouncement } from './components/FormattedAnnouncement';
 import { CoworkersModal } from './components/CoworkersModal';
 import { WeeHurLogo } from './components/WeeHurLogo';
+import { ConfirmDeleteModal, StaffDeleteItem } from './components/ConfirmDeleteModal';
+import { ToastNotification, ToastState } from './components/ToastNotification';
 import * as XLSX from 'xlsx';
 
 // Active route tabs in Portal
@@ -86,6 +100,8 @@ function AppContent() {
     currentUser, 
     currentUserProfile, 
     isAdmin, 
+    isSuperAdmin,
+    canEdit,
     loading, 
     login, 
     logout, 
@@ -119,6 +135,7 @@ function AppContent() {
   const [selectedSiteFilter, setSelectedSiteFilter] = useState('All');
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('All');
   const [directoryStatusFilter, setDirectoryStatusFilter] = useState<'All' | 'Active' | 'Resigned'>('All');
+  const [directoryViewMode, setDirectoryViewMode] = useState<'table' | 'cards'>('table');
 
   // Admin Modals state
   const [isEmpModalOpen, setIsEmpModalOpen] = useState(false);
@@ -126,9 +143,69 @@ function AppContent() {
   const [isSiteModalOpen, setIsSiteModalOpen] = useState(false);
   const [editingSite, setEditingSite] = useState<WorkSite | null>(null);
   const [isAnnounceModalOpen, setIsAnnounceModalOpen] = useState(false);
+  const [editingAnnouncement, setEditingAnnouncement] = useState<Announcement | null>(null);
   const [isExcelImportOpen, setIsExcelImportOpen] = useState(false);
   const [importLoading, setImportLoading] = useState(false);
   const [deletingSiteId, setDeletingSiteId] = useState<string | null>(null);
+
+  // Selected staff for batch deletion
+  const [selectedStaffForDelete, setSelectedStaffForDelete] = useState<string[]>([]);
+
+  // In-app Delete Confirmation Modal State
+  const [deleteModalState, setDeleteModalState] = useState<{
+    isOpen: boolean;
+    title: string;
+    description?: string;
+    items: StaffDeleteItem[];
+    isLoading: boolean;
+    onConfirm: () => Promise<void>;
+  }>({
+    isOpen: false,
+    title: '',
+    description: '',
+    items: [],
+    isLoading: false,
+    onConfirm: async () => {}
+  });
+
+  // Global In-App Toast notification State
+  const [toastState, setToastState] = useState<ToastState | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToastState({ show: true, type, message });
+    setTimeout(() => {
+      setToastState(null);
+    }, 4500);
+  };
+
+  // Helper to reliably check if a staff member is selected (by email, id, employeeId, or fullName)
+  const isStaffSelected = (emp: Employee) => {
+    return selectedStaffForDelete.some(s => {
+      const lower = s.trim().toLowerCase();
+      return (emp.email && emp.email.trim().toLowerCase() === lower) ||
+             (emp.id && emp.id.trim().toLowerCase() === lower) ||
+             (emp.fullName && emp.fullName.trim().toLowerCase() === lower) ||
+             (emp.employeeId && emp.employeeId.trim().toLowerCase() === lower);
+    });
+  };
+
+  // Expandable staff cards state
+  const [expandedStaffEmails, setExpandedStaffEmails] = useState<string[]>([]);
+
+  const toggleExpandStaff = (email: string) => {
+    setExpandedStaffEmails(prev => 
+      prev.includes(email) ? prev.filter(e => e !== email) : [...prev, email]
+    );
+  };
+
+  const handleExpandAllStaff = () => {
+    const allEmails = filteredEmployeesForActiveUser.map(e => e.email);
+    if (expandedStaffEmails.length >= allEmails.length && allEmails.length > 0) {
+      setExpandedStaffEmails([]);
+    } else {
+      setExpandedStaffEmails(allEmails);
+    }
+  };
 
   // Selected colleague profile details modal
   const [selectedColleague, setSelectedColleague] = useState<Employee | null>(null);
@@ -175,17 +252,39 @@ function AppContent() {
     }
   }, [isDarkMode]);
 
+  const [isDeduplicating, setIsDeduplicating] = useState(false);
+
   const loadAllData = async () => {
     setDataLoading(true);
     try {
       const { enabled } = initializeFirebase();
       if (!enabled) return;
 
+      // Silently clean up any duplicate records in Firestore if present
+      cleanAndDeduplicateEmployees().catch(err => console.warn('Auto deduplication check:', err));
+
       const loadedSites = await fetchSites();
       setSites(loadedSites);
 
       const loadedEmployees = await fetchAllEmployees();
-      setEmployees(loadedEmployees);
+      
+      // Ensure dates are properly formatted and superadmin profile is synced
+      const syncedEmployees = loadedEmployees.map(emp => {
+        const dateJoined = formatDateValue(emp.dateJoined) || emp.dateJoined;
+        const dateJoinedProject = emp.dateJoinedProject ? formatDateValue(emp.dateJoinedProject) : undefined;
+        const lastDateOfWork = emp.lastDateOfWork ? formatDateValue(emp.lastDateOfWork) : undefined;
+
+        let formattedEmp = { ...emp, dateJoined, dateJoinedProject, lastDateOfWork };
+
+        if (emp.email.toLowerCase() === 'chakra@weehur.com.sg') {
+          if (emp.role !== 'Admin') {
+            formattedEmp = { ...formattedEmp, role: 'Admin' as const };
+          }
+        }
+        return formattedEmp;
+      });
+
+      setEmployees(syncedEmployees);
 
       const loadedAnnouncements = await fetchAnnouncements();
       setAnnouncements(loadedAnnouncements);
@@ -198,6 +297,24 @@ function AppContent() {
       console.error('Error fetching dashboard data:', error);
     } finally {
       setDataLoading(false);
+    }
+  };
+
+  const handleRemoveDuplicates = async () => {
+    setIsDeduplicating(true);
+    try {
+      const res = await cleanAndDeduplicateEmployees();
+      await loadAllData();
+      if (res.removedCount > 0) {
+        alert(`Deduplication successful! Removed ${res.removedCount} duplicate staff entry/entries from Firestore. ${res.remainingCount} unique staff remain.`);
+      } else {
+        alert(`No duplicate staff records found. All ${res.remainingCount} staff entries are clean and unique!`);
+      }
+    } catch (err: any) {
+      console.error('Error removing duplicate staff:', err);
+      alert(`Failed to remove duplicates: ${err?.message || err}`);
+    } finally {
+      setIsDeduplicating(false);
     }
   };
 
@@ -305,6 +422,10 @@ function AppContent() {
 
   // Save/Edit Employee handler
   const handleSaveEmployee = async (data: Omit<Employee, 'id' | 'qrCodeDataUrl'>) => {
+    if (!canEdit) {
+      alert('Permission Denied: Your Admin account has View-Only access and cannot edit or create staff.');
+      return;
+    }
     try {
       const emailLower = data.email.toLowerCase().trim();
       if (editingEmployee) {
@@ -332,51 +453,204 @@ function AppContent() {
     }
   };
 
-  // Delete employee record
-  const handleDeleteEmployee = async (email: string) => {
-    if (window.confirm(`Are you absolutely sure you want to permanently delete employee profile: "${email}"? This action cannot be undone.`)) {
-      try {
-        await deleteEmployee(email);
-        await loadAllData();
-      } catch (err: any) {
-        alert('Failed to delete: ' + err.message);
-      }
+  // Delete employee record with In-App Confirmation Modal
+  const handleDeleteEmployee = (identifier: string) => {
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot delete records.', 'error');
+      return;
     }
+    const targetLower = identifier.trim().toLowerCase();
+    const emp = employees.find(e => 
+      (e.email && e.email.trim().toLowerCase() === targetLower) || 
+      (e.id && e.id.trim().toLowerCase() === targetLower) ||
+      (e.fullName && e.fullName.trim().toLowerCase() === targetLower) ||
+      (e.employeeId && e.employeeId.trim().toLowerCase() === targetLower)
+    );
+
+    const item: StaffDeleteItem = {
+      id: emp?.id || emp?.email || identifier,
+      name: emp?.fullName || identifier,
+      designation: emp?.designation,
+      email: emp?.email,
+      photoUrl: emp?.photoUrl,
+      department: emp?.department
+    };
+
+    setDeleteModalState({
+      isOpen: true,
+      title: 'Delete Staff Profile',
+      description: `Are you sure you want to permanently delete the profile of ${item.name}? This action cannot be undone.`,
+      items: [item],
+      isLoading: false,
+      onConfirm: async () => {
+        try {
+          setDeleteModalState(prev => ({ ...prev, isLoading: true }));
+          await deleteEmployee(emp?.id || emp?.email || emp?.fullName || identifier);
+          setSelectedStaffForDelete(prev => prev.filter(e => {
+            const el = e.trim().toLowerCase();
+            return el !== targetLower && 
+              (!emp?.email || el !== emp.email.trim().toLowerCase()) && 
+              (!emp?.id || el !== emp.id.trim().toLowerCase()) &&
+              (!emp?.fullName || el !== emp.fullName.trim().toLowerCase());
+          }));
+          await loadAllData();
+          setDeleteModalState(prev => ({ ...prev, isOpen: false, isLoading: false }));
+          showToast(`Successfully deleted staff profile: ${item.name}`, 'success');
+        } catch (err: any) {
+          console.error('Failed to delete employee:', err);
+          setDeleteModalState(prev => ({ ...prev, isLoading: false }));
+          showToast('Failed to delete staff: ' + (err.message || err), 'error');
+        }
+      }
+    });
+  };
+
+  // Toggle selection for batch delete
+  const toggleSelectStaffForDelete = (identifier: string) => {
+    if (!canEdit) return;
+    const target = identifier.trim();
+    setSelectedStaffForDelete(prev => {
+      const exists = prev.some(e => e.toLowerCase() === target.toLowerCase());
+      return exists 
+        ? prev.filter(e => e.toLowerCase() !== target.toLowerCase())
+        : [...prev, target];
+    });
+  };
+
+  // Select or Deselect All staff in a given array
+  const handleSelectAllStaffForDelete = (identifiersToSelect: string[]) => {
+    if (!canEdit) return;
+    const lowerSelected = new Set(selectedStaffForDelete.map(e => e.toLowerCase()));
+    const allSelected = identifiersToSelect.length > 0 && 
+      identifiersToSelect.every(id => lowerSelected.has(id.toLowerCase()));
+    
+    if (allSelected) {
+      const toRemove = new Set(identifiersToSelect.map(id => id.toLowerCase()));
+      setSelectedStaffForDelete(prev => prev.filter(e => !toRemove.has(e.toLowerCase())));
+    } else {
+      setSelectedStaffForDelete(prev => {
+        const set = new Set(prev);
+        identifiersToSelect.forEach(id => set.add(id));
+        return Array.from(set);
+      });
+    }
+  };
+
+  // Batch delete selected staff members with In-App Confirmation Modal
+  const handleDeleteSelectedStaff = () => {
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot delete records.', 'error');
+      return;
+    }
+    if (selectedStaffForDelete.length === 0) return;
+
+    const itemsToDelete: StaffDeleteItem[] = [];
+    const matchedEmployees: Employee[] = [];
+
+    employees.forEach(emp => {
+      const match = isStaffSelected(emp);
+      if (match) {
+        matchedEmployees.push(emp);
+        itemsToDelete.push({
+          id: emp.id || emp.email || emp.fullName,
+          name: emp.fullName,
+          designation: emp.designation,
+          email: emp.email,
+          photoUrl: emp.photoUrl,
+          department: emp.department
+        });
+      }
+    });
+
+    if (itemsToDelete.length === 0) {
+      selectedStaffForDelete.forEach(id => {
+        itemsToDelete.push({
+          id,
+          name: id,
+          designation: 'Staff Member'
+        });
+      });
+    }
+
+    const count = itemsToDelete.length;
+
+    setDeleteModalState({
+      isOpen: true,
+      title: `Delete Selected Staff (${count})`,
+      description: `Are you sure you want to permanently delete these ${count} staff member(s)?`,
+      items: itemsToDelete,
+      isLoading: false,
+      onConfirm: async () => {
+        try {
+          setDeleteModalState(prev => ({ ...prev, isLoading: true }));
+          setDataLoading(true);
+
+          // Collect all potential keys for selected staff to ensure Firestore deletes every matching document
+          const keysToDelete = new Set<string>(selectedStaffForDelete);
+          matchedEmployees.forEach(emp => {
+            if (emp.id) keysToDelete.add(emp.id);
+            if (emp.email) keysToDelete.add(emp.email);
+            if (emp.fullName) keysToDelete.add(emp.fullName);
+            if (emp.employeeId) keysToDelete.add(emp.employeeId);
+          });
+
+          const deletedCount = await deleteEmployeesBatch(Array.from(keysToDelete));
+          setSelectedStaffForDelete([]);
+          await loadAllData();
+          setDeleteModalState(prev => ({ ...prev, isOpen: false, isLoading: false }));
+          showToast(`Successfully deleted ${deletedCount || count} staff member(s).`, 'success');
+        } catch (err: any) {
+          console.error('Failed to batch delete selected staff:', err);
+          setDeleteModalState(prev => ({ ...prev, isLoading: false }));
+          showToast('Failed to delete staff: ' + (err.message || err), 'error');
+        } finally {
+          setDataLoading(false);
+        }
+      }
+    });
   };
 
   // Toggle between Active and Resigned status
   const handleToggleEmployeeStatus = async (emp: Employee) => {
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot edit status.', 'error');
+      return;
+    }
     const nextStatus = emp.status === 'Active' ? 'Resigned' : 'Active';
     const lastDateOfWork = nextStatus === 'Resigned' ? new Date().toISOString().split('T')[0] : '';
-    const confirmationText = nextStatus === 'Resigned' 
-      ? `Are you sure you want to mark "${emp.fullName}" as Resigned? This will set their last day of work to today.`
-      : `Are you sure you want to reactivate "${emp.fullName}"?`;
     
-    if (window.confirm(confirmationText)) {
-      try {
-        await updateEmployee(emp.email, { 
-          status: nextStatus,
-          lastDateOfWork: lastDateOfWork || undefined
-        });
-        await loadAllData();
-      } catch (err: any) {
-        alert('Failed to update status: ' + err.message);
-      }
+    try {
+      await updateEmployee(emp.email || emp.id, { 
+        status: nextStatus,
+        lastDateOfWork: lastDateOfWork || undefined
+      });
+      await loadAllData();
+      showToast(`Updated ${emp.fullName}'s status to ${nextStatus}`, 'success');
+    } catch (err: any) {
+      showToast('Failed to update status: ' + (err.message || err), 'error');
     }
   };
 
   // Reset employee password via Admin trigger
   const handleAdminResetPassword = async (email: string) => {
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot reset user passwords.', 'error');
+      return;
+    }
     try {
       await resetPassword(email);
-      alert(`A secure password reset verification link was sent to: ${email}`);
+      showToast(`Password reset link sent to ${email}`, 'info');
     } catch (err: any) {
-      alert('Failed to trigger reset: ' + err.message);
+      showToast('Failed to trigger reset: ' + (err.message || err), 'error');
     }
   };
 
   // Create/Edit site handler
   const handleSaveSite = async (name: string, editingSiteId?: string) => {
+    if (!canEdit) {
+      alert('Permission Denied: Your Admin account has View-Only access and cannot add or edit work sites.');
+      return;
+    }
     try {
       if (editingSiteId) {
         await editWorkSite(editingSiteId, name);
@@ -392,21 +666,36 @@ function AppContent() {
 
   // Delete site handler
   const handleDeleteSite = async (siteId: string) => {
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot delete work sites.', 'error');
+      return;
+    }
     try {
       await deleteWorkSite(siteId);
       await loadAllData();
       setDeletingSiteId(null);
+      showToast('Work site deleted successfully.', 'success');
     } catch (err: any) {
-      alert(`Error deleting work site: ${err.message || err}`);
+      showToast(`Error deleting work site: ${err.message || err}`, 'error');
     }
   };
 
-  // Create announcement handler
-  const handleCreateAnnouncement = async (title: string, content: string) => {
+  // Save announcement handler (Create or Update)
+  const handleSaveAnnouncement = async (title: string, content: string, announcementId?: string) => {
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot post or edit announcements.', 'error');
+      return;
+    }
     try {
-      const author = currentUserProfile?.fullName || 'System Admin';
-      await addAnnouncement(title, content, author);
+      if (announcementId) {
+        await updateAnnouncement(announcementId, title, content);
+      } else {
+        const author = currentUserProfile?.fullName || 'System Admin';
+        await addAnnouncement(title, content, author);
+      }
       await loadAllData();
+      setEditingAnnouncement(null);
+      showToast('Announcement published successfully.', 'success');
     } catch (err: any) {
       throw err;
     }
@@ -414,24 +703,32 @@ function AppContent() {
 
   // Delete announcement handler
   const handleDeleteAnnouncement = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this announcement?')) return;
+    if (!canEdit) {
+      showToast('Permission Denied: Your Admin account has View-Only access and cannot delete announcements.', 'error');
+      return;
+    }
     try {
       await deleteAnnouncement(id);
       await loadAllData();
+      showToast('Announcement removed.', 'success');
     } catch (err: any) {
-      alert(`Error deleting announcement: ${err.message || err}`);
+      showToast(`Error deleting announcement: ${err.message || err}`, 'error');
     }
   };
 
   // Bulk Excel/CSV Import handler
   const handleExcelImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!canEdit) {
+      alert('Permission Denied: Your Admin account has View-Only access and cannot import staff records.');
+      return;
+    }
     const file = e.target.files?.[0];
     if (!file) return;
 
     setImportLoading(true);
     try {
       const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data, { type: 'array' });
+      const workbook = XLSX.read(data, { type: 'array', cellDates: true });
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
       const jsonData = XLSX.utils.sheet_to_json<any>(worksheet);
@@ -458,6 +755,8 @@ function AppContent() {
       let successCount = 0;
       let errorCount = 0;
       const skipDetails: string[] = [];
+      const processedEmailsInBatch = new Set<string>();
+      const existingEmails = new Set(employees.map(emp => emp.email.toLowerCase()));
 
       for (let i = 0; i < jsonData.length; i++) {
         const row = jsonData[i];
@@ -469,7 +768,7 @@ function AppContent() {
         const emailRaw = getRowValue(row, ['email', 'Email Address', 'Email', 'EmailAddress']);
         const email = emailRaw ? String(emailRaw).trim().toLowerCase() : '';
 
-        // If a row has absolutely no staff name and no email, it is likely a blank spreadsheet row, skip silently
+        // If a row has absolutely no staff name, skip silently
         if (!fullName && !email) {
           continue;
         }
@@ -489,10 +788,12 @@ function AppContent() {
         const role: 'Admin' | 'Employee' = roleRaw.toLowerCase() === 'admin' ? 'Admin' : 'Employee';
 
         // Date of Employment
-        const dateJoined = String(getRowValue(row, ['Date of Employment', 'dateJoined', 'Date Joined', 'Joined Date', 'DateOfEmployment'], new Date().toISOString().split('T')[0])).trim();
+        const dateJoinedRaw = getRowValue(row, ['Date of Employment', 'dateJoined', 'Date Joined', 'Joined Date', 'DateOfEmployment'], '');
+        const dateJoined = formatDateValue(dateJoinedRaw) || new Date().toISOString().split('T')[0];
         
         // Date of Joined to Site
-        const dateJoinedProject = String(getRowValue(row, ['Date of Joined to Site', 'Date Joined to Site', 'Date of Joined to Project', 'Date Joined to Project', 'Project Joined Date', 'DateJoinedProject', 'DateJoinedSite'], '')).trim();
+        const dateJoinedProjectRaw = getRowValue(row, ['Date of Joined to Site', 'Date Joined to Site', 'Date of Joined to Project', 'Date Joined to Project', 'Project Joined Date', 'DateJoinedProject', 'DateJoinedSite'], '');
+        const dateJoinedProject = formatDateValue(dateJoinedProjectRaw);
 
         // Remarks
         const remarksInput = String(getRowValue(row, ['Remarks', 'remarks', 'Note', 'notes'], '')).trim();
@@ -525,25 +826,38 @@ function AppContent() {
           status = 'Resigned';
         }
 
-        const lastDateOfWork = String(getRowValue(row, ['lastDateOfWork', 'Last Date of Work', 'Last Working Date', 'Last Working Day'], '')).trim();
+        const lastDateOfWorkRaw = getRowValue(row, ['lastDateOfWork', 'Last Date of Work', 'Last Working Date', 'Last Working Day'], '');
+        const lastDateOfWork = formatDateValue(lastDateOfWorkRaw);
 
-        if (!fullName || !email) {
+        if (!fullName) {
           errorCount++;
-          skipDetails.push(`Row ${i + 2}: Missing ${!fullName ? 'Staff Name' : 'Email Address'}`);
+          skipDetails.push(`Row ${i + 2}: Missing Staff Name`);
           continue;
         }
 
-        if (!email.toLowerCase().trim().endsWith('@weehur.com.sg')) {
-          errorCount++;
-          skipDetails.push(`Row ${i + 2} (${fullName}): Email domain must end with @weehur.com.sg`);
-          continue;
+        // Auto-generate email if email is missing or empty
+        let finalEmail = email ? email.trim().toLowerCase() : '';
+        if (!finalEmail) {
+          const cleanName = fullName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'staff';
+          const cleanEmpId = String(employeeId).toLowerCase().replace(/[^a-z0-9]/g, '') || Math.floor(1000 + Math.random() * 9000);
+          finalEmail = `${cleanName}.${cleanEmpId}@weehur.com.sg`;
+        } else if (!finalEmail.endsWith('@weehur.com.sg')) {
+          if (finalEmail.includes('@')) {
+            const localPart = finalEmail.split('@')[0].replace(/[^a-z0-9._-]/g, '');
+            finalEmail = `${localPart || 'staff'}@weehur.com.sg`;
+          } else {
+            finalEmail = `${finalEmail.replace(/[^a-z0-9._-]/g, '')}@weehur.com.sg`;
+          }
         }
+
+        const targetEmail = finalEmail;
+        processedEmailsInBatch.add(targetEmail);
 
         const newEmp: Omit<Employee, 'id'> = {
           employeeId: String(employeeId),
           fullName: String(fullName),
           photoUrl: '',
-          email: String(email).trim().toLowerCase(),
+          email: targetEmail,
           phone: String(phone),
           designation: String(designation),
           department: String(department),
@@ -628,15 +942,19 @@ function AppContent() {
       filtered = filtered.filter(emp => emp.status === directoryStatusFilter);
     }
 
-    // When viewing Active status, sort staff site by site
-    if (directoryStatusFilter === 'Active') {
-      filtered.sort((a, b) => {
-        const siteA = (a.workSites || []).join(', ').toLowerCase();
-        const siteB = (b.workSites || []).join(', ').toLowerCase();
-        if (siteA !== siteB) return siteA.localeCompare(siteB);
-        return a.fullName.localeCompare(b.fullName);
-      });
-    }
+    // Always sequence staff site by site (e.g. CORPORATE, DEFECT, TANK97), then by name
+    filtered.sort((a, b) => {
+      const getSiteKey = (emp: Employee) => {
+        if (emp.workSites && emp.workSites.length > 0) {
+          return emp.workSites.join(', ').toLowerCase();
+        }
+        return (emp.department || 'CORPORATE').toLowerCase();
+      };
+      const siteA = getSiteKey(a);
+      const siteB = getSiteKey(b);
+      if (siteA !== siteB) return siteA.localeCompare(siteB);
+      return a.fullName.localeCompare(b.fullName);
+    });
 
     return filtered;
   }, [employees, currentUserProfile, isAdmin, searchQuery, selectedSiteFilter, directoryStatusFilter]);
@@ -659,7 +977,7 @@ function AppContent() {
 
     siteList.forEach(siteName => {
       const staffAtSite = activeStaff.filter(e => 
-        (e.workSites || []).includes(siteName) || (e.workSites || []).includes('All')
+        (e.workSites || []).includes(siteName)
       );
       if (staffAtSite.length > 0) {
         groups.push({
@@ -1163,14 +1481,23 @@ function AppContent() {
             </h3>
             <div className="flex items-center gap-1.5 mt-1">
               <span className={`px-2 py-0.5 rounded-md text-[8px] font-black uppercase tracking-wider ${
-                isAdmin ? 'bg-red-50 text-red-600 dark:bg-red-950/20 dark:text-red-400' : 'bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400'
+                isSuperAdmin 
+                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300'
+                  : isAdmin 
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300' 
+                    : 'bg-blue-50 text-blue-600 dark:bg-blue-950/20 dark:text-blue-400'
               }`}>
-                {isAdmin ? 'ADMIN' : 'EMPLOYEE'}
+                {isSuperAdmin ? 'SUPER ADMIN' : isAdmin ? 'ADMIN (VIEW-ONLY)' : 'EMPLOYEE'}
               </span>
               <span className="text-[9px] text-slate-400 font-bold uppercase truncate max-w-[100px]" title={currentUserProfile.designation}>
                 {currentUserProfile.designation}
               </span>
             </div>
+            {isAdmin && !isSuperAdmin && (
+              <p className="text-[8.5px] text-slate-500 dark:text-slate-400 mt-1.5 px-2 font-medium">
+                Full site staff directory view access (Read-Only).
+              </p>
+            )}
           </div>
 
           {/* Navigation Links */}
@@ -1475,6 +1802,17 @@ function AppContent() {
                                     <table className="w-full text-left border-collapse">
                                       <thead>
                                         <tr className="border-b border-slate-200/60 dark:border-slate-800">
+                                          {canEdit && (
+                                            <th className="py-2 pr-2 w-8">
+                                              <input
+                                                type="checkbox"
+                                                checked={group.staff.length > 0 && group.staff.every(e => isStaffSelected(e))}
+                                                onChange={() => handleSelectAllStaffForDelete(group.staff.map(e => e.email || e.id))}
+                                                className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                                                title="Select All in Site Group"
+                                              />
+                                            </th>
+                                          )}
                                           <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Staff Name</th>
                                           <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Designation</th>
                                           <th className="py-2 text-[9px] font-black uppercase tracking-wider text-slate-400">Assigned Site(s)</th>
@@ -1484,7 +1822,17 @@ function AppContent() {
                                       </thead>
                                       <tbody className="divide-y divide-slate-100 dark:divide-slate-850">
                                         {group.staff.map(emp => (
-                                          <tr key={emp.email} className="hover:bg-white dark:hover:bg-slate-900 transition-colors">
+                                          <tr key={emp.id || emp.email} className={`hover:bg-white dark:hover:bg-slate-900 transition-colors ${isStaffSelected(emp) ? 'bg-red-50/50 dark:bg-red-950/20' : ''}`}>
+                                            {canEdit && (
+                                              <td className="py-2.5 pr-2">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isStaffSelected(emp)}
+                                                  onChange={() => toggleSelectStaffForDelete(emp.email || emp.id)}
+                                                  className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                                                />
+                                              </td>
+                                            )}
                                             <td className="py-2.5 pr-3">
                                               <div className="flex items-center gap-2.5">
                                                 {hasValidPhoto(emp.photoUrl) ? (
@@ -1579,16 +1927,36 @@ function AppContent() {
                               <table className="w-full text-left border-collapse">
                                 <thead>
                                   <tr className="border-b border-slate-100 dark:border-slate-800">
+                                    {canEdit && (
+                                      <th className="py-2 pr-2 w-8">
+                                        <input
+                                          type="checkbox"
+                                          checked={employees.filter(e => e.status === 'Resigned').length > 0 && employees.filter(e => e.status === 'Resigned').every(e => isStaffSelected(e))}
+                                          onChange={() => handleSelectAllStaffForDelete(employees.filter(e => e.status === 'Resigned').map(e => e.email || e.id))}
+                                          className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                                          title="Select All Resigned Staff"
+                                        />
+                                      </th>
+                                    )}
                                     <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Staff Info</th>
                                     <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Designation</th>
-                                    <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Department</th>
                                     <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Assigned Site(s)</th>
                                     <th className="py-2 text-[10px] font-black uppercase tracking-wider text-slate-400">Actions</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100 dark:divide-slate-850">
                                   {employees.filter(e => e.status === 'Resigned').map(emp => (
-                                    <tr key={emp.email} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors">
+                                    <tr key={emp.id || emp.email} className={`hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors ${isStaffSelected(emp) ? 'bg-red-50/50 dark:bg-red-950/20' : ''}`}>
+                                      {canEdit && (
+                                        <td className="py-3 pr-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={isStaffSelected(emp)}
+                                            onChange={() => toggleSelectStaffForDelete(emp.email || emp.id)}
+                                            className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                                          />
+                                        </td>
+                                      )}
                                       <td className="py-3 pr-4">
                                         <div className="flex items-center gap-3">
                                           {hasValidPhoto(emp.photoUrl) ? (
@@ -1611,9 +1979,6 @@ function AppContent() {
                                       </td>
                                       <td className="py-3 pr-4">
                                         <span className="text-xs font-semibold text-slate-600 dark:text-slate-350">{emp.designation}</span>
-                                      </td>
-                                      <td className="py-3 pr-4">
-                                        <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">{emp.department || 'General'}</span>
                                       </td>
                                       <td className="py-3 pr-4">
                                         <div className="flex flex-wrap gap-1">
@@ -1662,50 +2027,55 @@ function AppContent() {
                             Quick Administrative Tasks
                           </h3>
                           <div className="grid grid-cols-2 gap-2.5">
-                            <button
-                              onClick={() => { setEditingEmployee(null); setIsEmpModalOpen(true); }}
-                              className="col-span-2 p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm cursor-pointer"
-                            >
-                              <Plus className="w-4 h-4" />
-                              <span>Add Staff</span>
-                            </button>
+                            {canEdit && (
+                              <button
+                                onClick={() => { setEditingEmployee(null); setIsEmpModalOpen(true); }}
+                                className="col-span-2 p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                              >
+                                <Plus className="w-4 h-4" />
+                                <span>Add Staff</span>
+                              </button>
+                            )}
 
-                            <button
-                              onClick={() => setIsAnnounceModalOpen(true)}
-                              className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
-                            >
-                              <FileText className="w-4 h-4 text-amber-500" />
-                              <span>Post News</span>
-                            </button>
+                            {canEdit && (
+                              <button
+                                onClick={() => { setEditingAnnouncement(null); setIsAnnounceModalOpen(true); }}
+                                className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <FileText className="w-4 h-4 text-amber-500" />
+                                <span>Post News</span>
+                              </button>
+                            )}
 
                             <button
                               onClick={() => exportEmployeesToCSV(employees)}
-                              className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                              className={`p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer ${!canEdit ? 'col-span-1' : ''}`}
                             >
                               <FileSpreadsheet className="w-4 h-4 text-green-500" />
                               <span>Export Excel</span>
                             </button>
 
+                            {canEdit && (
+                              <button
+                                onClick={() => {
+                                  setIsExcelImportOpen(true);
+                                  setActiveTab('directory');
+                                }}
+                                className="p-3 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                                <span>Import Staff</span>
+                              </button>
+                            )}
+
                             {isAdmin && (
-                              <>
-                                <button
-                                  onClick={() => {
-                                    setIsExcelImportOpen(true);
-                                    setActiveTab('directory');
-                                  }}
-                                  className="p-3 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
-                                >
-                                  <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                                  <span>Import Staff</span>
-                                </button>
-                                <button
-                                  onClick={() => setActiveTab('sites')}
-                                  className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
-                                >
-                                  <MapPin className="w-4 h-4 text-red-500" />
-                                  <span>Manage Sites</span>
-                                </button>
-                              </>
+                              <button
+                                onClick={() => setActiveTab('sites')}
+                                className="p-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-bold uppercase transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <MapPin className="w-4 h-4 text-red-500" />
+                                <span>Work Sites</span>
+                              </button>
                             )}
                           </div>
                         </div>
@@ -1728,7 +2098,7 @@ function AppContent() {
                             {announcements.slice(0, 2).map(ann => (
                               <div key={ann.id} className="space-y-1">
                                 <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-200 uppercase tracking-tight">{ann.title}</h4>
-                                <p className="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2">{ann.content}</p>
+                                <FormattedAnnouncement content={ann.content} compact />
                                 <span className="text-[8px] text-slate-400 font-bold uppercase block">{new Date(ann.createdAt).toLocaleDateString()}</span>
                               </div>
                             ))}
@@ -1755,11 +2125,19 @@ function AppContent() {
                           <div className="space-y-4">
                             <div className="h-64 w-full">
                               <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={stats.distributionBySite} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                <BarChart data={stats.distributionBySite} margin={{ top: 22, right: 10, left: -20, bottom: 0 }}>
                                   <XAxis dataKey="name" tick={{ fontSize: 10, fill: isDarkMode ? '#94A3B8' : '#475569', fontWeight: 'bold' }} axisLine={false} tickLine={false} />
                                   <YAxis tick={{ fontSize: 10, fill: isDarkMode ? '#94A3B8' : '#475569' }} axisLine={false} tickLine={false} />
                                   <Tooltip contentStyle={{ background: isDarkMode ? '#0F172A' : '#FFFFFF', border: '1px solid #E2E8F0', borderRadius: '12px', fontSize: '11px' }} />
                                   <Bar dataKey="count" fill="#2563EB" radius={[8, 8, 0, 0]}>
+                                    <LabelList 
+                                      dataKey="count" 
+                                      position="top" 
+                                      fill={isDarkMode ? '#CBD5E1' : '#1E293B'} 
+                                      fontSize={10} 
+                                      fontWeight="bold" 
+                                      offset={6}
+                                    />
                                     {stats.distributionBySite.map((entry, index) => {
                                       const isSelected = selectedSiteForStaffList === entry.name;
                                       return (
@@ -1864,16 +2242,29 @@ function AppContent() {
                       
                       {/* Active stats */}
                       <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-white dark:bg-[#0B132B] p-4 rounded-2xl border border-slate-150 dark:border-slate-800 shadow-sm flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/20 flex items-center justify-center text-blue-600">
-                            <MapPin className="w-5 h-5" />
+                        <div className="bg-white dark:bg-[#0B132B] p-4 rounded-2xl border border-slate-150 dark:border-slate-800 shadow-sm flex items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/20 flex items-center justify-center text-blue-600 shrink-0">
+                              <MapPin className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block truncate">Deployed Staff Project</span>
+                              <span className="text-xs font-extrabold text-slate-850 dark:text-white truncate block" title={currentUserProfile.workSites.join(', ')}>
+                                {currentUserProfile.workSites.join(', ')}
+                              </span>
+                            </div>
                           </div>
-                          <div>
-                            <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 block">Assigned Sites</span>
-                            <span className="text-xs font-extrabold text-slate-850 dark:text-white truncate max-w-[150px] block" title={currentUserProfile.workSites.join(', ')}>
-                              {currentUserProfile.workSites.join(', ')}
-                            </span>
-                          </div>
+                          {canEdit && (
+                            <button
+                              type="button"
+                              onClick={() => { setEditingEmployee(currentUserProfile); setIsEmpModalOpen(true); }}
+                              className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900/50 text-blue-600 dark:text-blue-400 rounded-xl text-[10px] font-extrabold uppercase tracking-wider flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+                              title="Deploy or edit staff project site"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>Deploy Site</span>
+                            </button>
+                          )}
                         </div>
 
                         <button
@@ -1912,18 +2303,30 @@ function AppContent() {
                                 <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-200 uppercase tracking-tight line-clamp-1">{ann.title}</h4>
                                 <div className="flex items-center gap-2 shrink-0">
                                   <span className="text-[8px] text-slate-400 font-bold uppercase">{new Date(ann.createdAt).toLocaleDateString()}</span>
-                                  {isAdmin && (
-                                    <button
-                                      onClick={() => handleDeleteAnnouncement(ann.id)}
-                                      className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors cursor-pointer"
-                                      title="Delete Announcement"
-                                    >
-                                      <Trash2 className="w-3.5 h-3.5" />
-                                    </button>
+                                  {canEdit && (
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        onClick={() => {
+                                          setEditingAnnouncement(ann);
+                                          setIsAnnounceModalOpen(true);
+                                        }}
+                                        className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors cursor-pointer"
+                                        title="Edit Announcement"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteAnnouncement(ann.id)}
+                                        className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors cursor-pointer"
+                                        title="Delete Announcement"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
                                   )}
                                 </div>
                               </div>
-                              <p className="text-[10px] text-slate-600 dark:text-slate-400 leading-normal">{ann.content}</p>
+                              <FormattedAnnouncement content={ann.content} compact />
                               <span className="text-[8px] text-blue-600 dark:text-blue-400 font-extrabold uppercase tracking-widest block">By: {ann.authorName}</span>
                             </div>
                           ))}
@@ -1953,7 +2356,7 @@ function AppContent() {
               >
                 
                  {/* Header title */}
-                <div className="flex items-center gap-4 pb-4 border-b border-slate-150 dark:border-slate-800">
+                <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-150 dark:border-slate-800">
                   <div className="flex items-center gap-3">
                     <button
                       onClick={() => setActiveTab('dashboard')}
@@ -1975,7 +2378,7 @@ function AppContent() {
 
                 {/* EXCEL IMPORT UTILITY PANEL */}
                 <AnimatePresence>
-                  {isExcelImportOpen && isAdmin && (
+                  {isExcelImportOpen && canEdit && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
@@ -2032,22 +2435,26 @@ function AppContent() {
                               <li><strong>Designation</strong> (Required) - e.g. Safety Officer</li>
                               <li><strong>Site</strong> (Optional) - Operational sites e.g. Kallang Site</li>
                               <li><strong>Role</strong> (Optional) - "Employee" or "Admin" (defaults to Employee)</li>
-                              <li><strong>Email Address</strong> (Required & Unique) - e.g. ahkow@weehur.com.sg</li>
+                              <li><strong>Status</strong> (Optional) - "Active" or "Resigned" (defaults to Active)</li>
+                              <li><strong>Last Date of Work</strong> (Optional) - YYYY-MM-DD format (if Resigned)</li>
+                              <li><strong>Email Address</strong> (Optional) - Auto-generated if blank</li>
                               <li><strong>Date of Employment</strong> (Optional) - YYYY-MM-DD format</li>
                               <li><strong>Date Joined to Site</strong> (Optional) - YYYY-MM-DD format</li>
-                              <li><strong>Remarks</strong> (Optional) - Custom staff status or notes</li>
+                              <li><strong>Remarks</strong> (Optional) - Custom notes or remarks</li>
                             </ul>
                           </div>
 
                           <button
                             onClick={() => {
-                              // Create and download sample spreadsheet template
+                              // Create and download sample spreadsheet template with Status
                               const ws = XLSX.utils.json_to_sheet([
                                 {
                                   "Staff Name": "Tan Ah Kow",
                                   "Designation": "Safety Officer",
                                   "Site": "Kallang Site",
                                   "Role": "Employee",
+                                  "Status": "Active",
+                                  "Last Date of Work": "",
                                   "Email Address": "ahkow@weehur.com.sg",
                                   "Date of Employment": "2024-01-15",
                                   "Date Joined to Site": "2024-02-01",
@@ -2058,10 +2465,24 @@ function AppContent() {
                                   "Designation": "Project Manager",
                                   "Site": "Changi Airport T5",
                                   "Role": "Admin",
+                                  "Status": "Active",
+                                  "Last Date of Work": "",
                                   "Email Address": "limkiat@weehur.com.sg",
                                   "Date of Employment": "2022-03-10",
                                   "Date Joined to Site": "2022-04-15",
                                   "Remarks": "Overseeing Runway Project"
+                                },
+                                {
+                                  "Staff Name": "Ahmad Bin Rosli",
+                                  "Designation": "Site Engineer",
+                                  "Site": "Keppel C2",
+                                  "Role": "Employee",
+                                  "Status": "Resigned",
+                                  "Last Date of Work": "2026-05-31",
+                                  "Email Address": "ahmad@weehur.com.sg",
+                                  "Date of Employment": "2021-08-01",
+                                  "Date Joined to Site": "2021-09-01",
+                                  "Remarks": "Completed contract handover"
                                 }
                               ]);
                               const wb = XLSX.utils.book_new();
@@ -2108,157 +2529,403 @@ function AppContent() {
                 </div>
 
                 {/* DIRECTORY VIEW TOGGLE (All, Active, Resigned) */}
-                <div className="flex flex-wrap gap-2 pb-1 bg-slate-50 dark:bg-slate-900/20 p-2 rounded-xl border border-slate-150 dark:border-slate-800/80" id="directory-status-selector">
-                  <button
-                    onClick={() => setDirectoryStatusFilter('All')}
-                    className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border ${
-                      directoryStatusFilter === 'All'
-                        ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 border-slate-900 dark:border-white shadow-sm'
-                        : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    All Staff ({employees.length})
-                  </button>
-                  <button
-                    onClick={() => setDirectoryStatusFilter('Active')}
-                    className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border flex items-center gap-1.5 ${
-                      directoryStatusFilter === 'Active'
-                        ? 'bg-green-600 text-white border-green-600 shadow-sm'
-                        : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                    Active ({employees.filter(e => e.status === 'Active').length})
-                  </button>
-                  <button
-                    onClick={() => setDirectoryStatusFilter('Resigned')}
-                    className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border flex items-center gap-1.5 ${
-                      directoryStatusFilter === 'Resigned'
-                        ? 'bg-red-600 text-white border-red-600 shadow-sm'
-                        : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
-                    }`}
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
-                    Resigned ({employees.filter(e => e.status === 'Resigned').length})
-                  </button>
-                </div>
-
-                {/* Directory Card Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {filteredEmployeesForActiveUser.map(emp => (
-                    <div 
-                      key={emp.email}
-                      className="bg-white dark:bg-[#0B132B] rounded-2xl border border-slate-150 dark:border-slate-800 p-4 shadow-sm flex flex-col justify-between hover:shadow-md transition-all relative"
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-1 bg-slate-50 dark:bg-slate-900/20 p-2 rounded-xl border border-slate-150 dark:border-slate-800/80" id="directory-status-selector">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setDirectoryStatusFilter('All')}
+                      className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border ${
+                        directoryStatusFilter === 'All'
+                          ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-950 border-slate-900 dark:border-white shadow-sm'
+                          : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                      }`}
                     >
-                      {/* Active/Resigned indicator */}
-                      <span className={`absolute top-4 right-4 w-2.5 h-2.5 rounded-full ${
-                        emp.status === 'Active' ? 'bg-green-500' : emp.status === 'Resigned' ? 'bg-red-500' : 'bg-amber-500'
-                      }`} title={emp.status} />
+                      All Staff ({employees.length})
+                    </button>
+                    <button
+                      onClick={() => setDirectoryStatusFilter('Active')}
+                      className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border flex items-center gap-1.5 ${
+                        directoryStatusFilter === 'Active'
+                          ? 'bg-green-600 text-white border-green-600 shadow-sm'
+                          : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                      Active ({employees.filter(e => e.status === 'Active').length})
+                    </button>
+                    <button
+                      onClick={() => setDirectoryStatusFilter('Resigned')}
+                      className={`px-3.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer border flex items-center gap-1.5 ${
+                        directoryStatusFilter === 'Resigned'
+                          ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                          : 'bg-white dark:bg-[#0B132B] hover:bg-slate-100 dark:hover:bg-slate-900 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800'
+                      }`}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
+                      Resigned ({employees.filter(e => e.status === 'Resigned').length})
+                    </button>
+                  </div>
 
-                      <div className="flex gap-3.5">
-                        {hasValidPhoto(emp.photoUrl) ? (
-                          <img 
-                            src={emp.photoUrl} 
-                            alt={emp.fullName}
-                            className="w-14 h-14 rounded-xl object-cover border border-slate-100 dark:border-slate-800 shrink-0"
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <div className="w-14 h-14 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-center text-slate-400 shrink-0">
-                            <User className="w-7 h-7" />
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <h3 className="text-xs font-black uppercase text-slate-950 dark:text-white truncate" title={emp.fullName}>
-                            {emp.fullName}
-                          </h3>
-                          <p className="text-[10px] text-red-500 font-bold uppercase tracking-wide truncate">
-                            {emp.designation}
-                          </p>
-                          <p className="text-[9px] text-slate-400 font-semibold truncate">
-                            {emp.email}
-                          </p>
-                          {emp.status === 'Resigned' && (
-                            <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-red-100 dark:bg-red-950/40 text-red-600 dark:text-red-400 tracking-wider">
-                              Resigned
-                            </span>
-                          )}
-                        </div>
-                      </div>
+                  <div className="flex items-center gap-2">
+                    {/* View Switcher (Table vs Cards) */}
+                    <div className="flex items-center border border-slate-200 dark:border-slate-800 rounded-lg p-0.5 bg-white dark:bg-slate-950">
+                      <button
+                        onClick={() => setDirectoryViewMode('table')}
+                        className={`px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer ${
+                          directoryViewMode === 'table'
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                        }`}
+                        title="Spreadsheet Table View"
+                      >
+                        <Table className="w-3.5 h-3.5" />
+                        <span>Table</span>
+                      </button>
+                      <button
+                        onClick={() => setDirectoryViewMode('cards')}
+                        className={`px-2.5 py-1 rounded text-[10px] font-black uppercase tracking-wider flex items-center gap-1 transition-all cursor-pointer ${
+                          directoryViewMode === 'cards'
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                        }`}
+                        title="Cards Grid View"
+                      >
+                        <LayoutGrid className="w-3.5 h-3.5" />
+                        <span>Cards</span>
+                      </button>
+                    </div>
 
-                      {/* Brief parameters list */}
-                      <div className="my-3 py-2 border-t border-b border-slate-50 dark:border-slate-800/80 space-y-1 text-[10px] text-slate-500">
-                        <div className="flex justify-between">
-                          <span>Staff ID:</span>
-                          <span className="font-bold text-slate-800 dark:text-slate-300">{emp.employeeId}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Work Site(s):</span>
-                          <span className="font-bold text-blue-600 dark:text-blue-400 truncate max-w-[140px] text-right" title={emp.workSites.join(', ')}>
-                            {emp.workSites.join(', ')}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Date of Employment:</span>
-                          <span className="font-bold text-slate-800 dark:text-slate-300">{emp.dateJoined}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>Joined Site Date:</span>
-                          <span className="font-bold text-slate-800 dark:text-slate-300">{emp.dateJoinedProject || 'N/A'}</span>
-                        </div>
-                        {emp.remarks && (
-                          <div className="text-[9px] text-slate-400 bg-slate-50 dark:bg-slate-900/60 p-1.5 rounded border border-slate-100 dark:border-slate-800 mt-1 truncate" title={emp.remarks}>
-                            <strong>Remarks:</strong> {emp.remarks}
-                          </div>
-                        )}
-                        {emp.status === 'Resigned' && (
-                          <div className="flex justify-between text-red-600 dark:text-red-400 font-bold">
-                            <span>Last Working Day:</span>
-                            <span>{emp.lastDateOfWork || 'Not Listed'}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Cards Actions Row */}
-                      <div className="flex items-center gap-1.5 mt-1 pt-1">
-                        <button
-                          onClick={() => setSelectedColleague(emp)}
-                          className="flex-1 py-1.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer"
-                        >
-                          View ID Profile
-                        </button>
-
-                        {isAdmin && (
+                    {directoryViewMode === 'cards' && filteredEmployeesForActiveUser.length > 0 && (
+                      <button
+                        onClick={handleExpandAllStaff}
+                        className="px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/30 dark:hover:bg-blue-900/50 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800/60 flex items-center gap-1.5"
+                      >
+                        {expandedStaffEmails.length >= filteredEmployeesForActiveUser.length ? (
                           <>
-                            <button
-                              onClick={() => { setEditingEmployee(emp); setIsEmpModalOpen(true); }}
-                              className="px-2 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/20 dark:text-blue-400 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleDeleteEmployee(emp.email)}
-                              className="px-2 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-950/20 dark:text-red-400 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer flex items-center gap-1"
-                              title="Delete Staff permanently"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span>Delete</span>
-                            </button>
+                            <ChevronUp className="w-3.5 h-3.5" />
+                            <span>Collapse All</span>
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown className="w-3.5 h-3.5" />
+                            <span>Expand All</span>
                           </>
                         )}
-                      </div>
+                      </button>
+                    )}
 
-                    </div>
-                  ))}
-
-                  {filteredEmployeesForActiveUser.length === 0 && (
-                    <div className="col-span-full py-16 text-center">
-                      <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
-                      <p className="text-xs font-bold text-slate-400 uppercase">No colleague matches found.</p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">Try altering search parameters or selected filters.</p>
-                    </div>
-                  )}
+                    {canEdit && filteredEmployeesForActiveUser.length > 0 && (
+                      <button
+                        onClick={() => handleSelectAllStaffForDelete(filteredEmployeesForActiveUser.map(e => e.email))}
+                        className="px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer bg-slate-200 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-300 dark:border-slate-700 flex items-center gap-1.5"
+                      >
+                        <CheckSquare className="w-3.5 h-3.5 text-red-500" />
+                        <span>
+                          {filteredEmployeesForActiveUser.every(e => selectedStaffForDelete.includes(e.email))
+                            ? 'Deselect All'
+                            : 'Select All'}
+                        </span>
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {/* SPREADSHEET TABLE VIEW OR CARD GRID VIEW */}
+                {directoryViewMode === 'table' ? (
+                  <div className="overflow-x-auto bg-white dark:bg-[#0B132B] rounded-xl border-2 border-slate-300 dark:border-slate-800 shadow-sm">
+                    <table className="w-full text-left border-collapse min-w-[600px]">
+                      <thead>
+                        <tr className="bg-slate-100 dark:bg-slate-900 border-b-2 border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white font-extrabold text-xs uppercase tracking-wider">
+                            {canEdit && (
+                            <th className="py-2.5 px-3 border-r border-slate-300 dark:border-slate-700 w-10 text-center">
+                              <input
+                                type="checkbox"
+                                checked={filteredEmployeesForActiveUser.length > 0 && filteredEmployeesForActiveUser.every(e => isStaffSelected(e))}
+                                onChange={() => handleSelectAllStaffForDelete(filteredEmployeesForActiveUser.map(e => e.email || e.id))}
+                                className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                              />
+                            </th>
+                          )}
+                          <th className="py-2.5 px-4 border-r border-slate-300 dark:border-slate-700">Staff Name</th>
+                          <th className="py-2.5 px-4 border-r border-slate-300 dark:border-slate-700">Designation</th>
+                          <th className="py-2.5 px-4 border-r border-slate-300 dark:border-slate-700">Work Site</th>
+                          <th className="py-2.5 px-3 border-r border-slate-300 dark:border-slate-700 text-center w-24">Status</th>
+                          <th className="py-2.5 px-3 text-center w-28">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-300 dark:divide-slate-800 text-xs font-semibold text-slate-900 dark:text-slate-100">
+                        {filteredEmployeesForActiveUser.map((emp) => {
+                          const isSelected = isStaffSelected(emp);
+                          const siteLabel = emp.workSites && emp.workSites.length > 0 
+                            ? emp.workSites.join(', ') 
+                            : (emp.department || 'CORPORATE');
+
+                          return (
+                            <tr 
+                              key={emp.id || emp.email}
+                              onClick={() => setSelectedColleague(emp)}
+                              className={`hover:bg-blue-50/80 dark:hover:bg-slate-900/80 transition-colors cursor-pointer border-b border-slate-300 dark:border-slate-800 ${
+                                isSelected ? 'bg-red-50/60 dark:bg-red-950/20' : ''
+                              }`}
+                            >
+                              {canEdit && (
+                                <td className="py-2.5 px-3 border-r border-slate-300 dark:border-slate-800 text-center" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => toggleSelectStaffForDelete(emp.email || emp.id)}
+                                    className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                                  />
+                                </td>
+                              )}
+                              <td className="py-2.5 px-4 border-r border-slate-300 dark:border-slate-800 font-bold text-slate-950 dark:text-white uppercase tracking-tight">
+                                {emp.fullName}
+                              </td>
+                              <td className="py-2.5 px-4 border-r border-slate-300 dark:border-slate-800 font-medium text-slate-800 dark:text-slate-200">
+                                {emp.designation}
+                              </td>
+                              <td className="py-2.5 px-4 border-r border-slate-300 dark:border-slate-800 font-extrabold text-slate-900 dark:text-slate-100 uppercase tracking-wide">
+                                {siteLabel}
+                              </td>
+                              <td className="py-2.5 px-3 border-r border-slate-300 dark:border-slate-800 text-center" onClick={(e) => e.stopPropagation()}>
+                                <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase ${
+                                  emp.status === 'Active' ? 'bg-green-100 dark:bg-green-950/60 text-green-700 dark:text-green-400' : 'bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400'
+                                }`}>
+                                  {emp.status}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-center gap-1">
+                                  <button
+                                    onClick={() => setSelectedColleague(emp)}
+                                    className="px-2 py-1 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded text-[10px] font-black uppercase transition-colors cursor-pointer"
+                                    title="View Badge Profile"
+                                  >
+                                    Badge
+                                  </button>
+                                  {canEdit && (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          setEditingEmployee(emp);
+                                          setIsEmpModalOpen(true);
+                                        }}
+                                        className="p-1 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded transition-colors cursor-pointer"
+                                        title="Edit Staff Record"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        onClick={() => handleDeleteEmployee(emp.email || emp.id)}
+                                        className="p-1 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded transition-colors cursor-pointer"
+                                        title="Delete Staff Record"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+
+                        {filteredEmployeesForActiveUser.length === 0 && (
+                          <tr>
+                            <td colSpan={canEdit ? 6 : 5} className="py-12 text-center text-slate-400 font-bold uppercase text-xs">
+                              No matching staff records found.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  /* Directory Card Grid */
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredEmployeesForActiveUser.map(emp => {
+                      const isExpanded = expandedStaffEmails.includes(emp.email);
+
+                      return (
+                        <div 
+                          key={emp.id || emp.email}
+                          onClick={() => toggleExpandStaff(emp.email || emp.id)}
+                          className={`bg-white dark:bg-[#0B132B] rounded-2xl border p-4 shadow-sm flex flex-col justify-between hover:shadow-md transition-all relative cursor-pointer ${
+                            isStaffSelected(emp) ? 'border-red-500 ring-1 ring-red-500 bg-red-50/20 dark:bg-red-950/10' : 'border-slate-150 dark:border-slate-800'
+                          }`}
+                        >
+                          {/* Card Header Bar: Selection Box, Status, Expand/Collapse Toggle */}
+                          <div className="flex items-center justify-between mb-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+                            {canEdit ? (
+                              <label className="flex items-center gap-1.5 cursor-pointer select-none" onClick={(e) => e.stopPropagation()}>
+                                <input
+                                  type="checkbox"
+                                  checked={isStaffSelected(emp)}
+                                  onChange={() => toggleSelectStaffForDelete(emp.email || emp.id)}
+                                  className="w-4 h-4 text-red-600 rounded border-slate-300 focus:ring-red-500 cursor-pointer"
+                                />
+                                <span className="text-[10px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                                  Select
+                                </span>
+                              </label>
+                            ) : (
+                              <div className="flex items-center gap-1.5">
+                                <span className={`w-2.5 h-2.5 rounded-full ${
+                                  emp.status === 'Active' ? 'bg-green-500' : emp.status === 'Resigned' ? 'bg-red-500' : 'bg-amber-500'
+                                }`} />
+                                <span className="text-[10px] font-bold uppercase text-slate-400">{emp.status}</span>
+                              </div>
+                            )}
+
+                            <div className="flex items-center gap-2">
+                              {isAdmin && (
+                                <span className={`w-2.5 h-2.5 rounded-full ${
+                                  emp.status === 'Active' ? 'bg-green-500' : emp.status === 'Resigned' ? 'bg-red-500' : 'bg-amber-500'
+                                }`} title={emp.status} />
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleExpandStaff(emp.email);
+                                }}
+                                className="px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-800 flex items-center gap-1 cursor-pointer transition-colors"
+                              >
+                                <span>{isExpanded ? 'Collapse' : 'Expand'}</span>
+                                {isExpanded ? <ChevronUp className="w-3 h-3 text-slate-500" /> : <ChevronDown className="w-3 h-3 text-slate-500" />}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Collapsed / Main Card View (Name, Designation, Site) */}
+                          <div className="flex gap-3.5 items-start">
+                            {hasValidPhoto(emp.photoUrl) ? (
+                              <img 
+                                src={emp.photoUrl} 
+                                alt={emp.fullName}
+                                className="w-14 h-14 rounded-xl object-cover border border-slate-100 dark:border-slate-800 shrink-0"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <div className="w-14 h-14 rounded-xl bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 flex items-center justify-center text-slate-400 shrink-0">
+                                <User className="w-7 h-7" />
+                              </div>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <h3 className="text-xs font-black uppercase text-slate-950 dark:text-white truncate" title={emp.fullName}>
+                                {emp.fullName}
+                              </h3>
+                              <p className="text-[10px] text-red-500 font-bold uppercase tracking-wide truncate mt-0.5">
+                                {emp.designation}
+                              </p>
+                              <div className="mt-1.5 flex items-center gap-1 text-[10px]">
+                                <span className="text-slate-400 font-bold uppercase">Site:</span>
+                                <span className="font-extrabold text-blue-600 dark:text-blue-400 truncate bg-blue-50 dark:bg-blue-950/40 px-1.5 py-0.5 rounded border border-blue-100 dark:border-blue-900/50">
+                                  {emp.workSites && emp.workSites.length > 0 ? emp.workSites.join(', ') : 'Unassigned'}
+                                </span>
+                              </div>
+                              {emp.status === 'Resigned' && (
+                                <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[8px] font-black uppercase bg-red-100 dark:bg-red-950/40 text-red-600 dark:text-red-400 tracking-wider">
+                                  Resigned
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Expandable Details Section */}
+                          <AnimatePresence>
+                            {isExpanded && (
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: 'auto' }}
+                                exit={{ opacity: 0, height: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800/80 space-y-1.5 text-[10px] text-slate-500">
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-semibold">Email:</span>
+                                    <span className="font-bold text-slate-800 dark:text-slate-300 truncate max-w-[160px]">{emp.email}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-semibold">Staff ID:</span>
+                                    <span className="font-bold text-slate-800 dark:text-slate-300">{emp.employeeId}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-semibold">Date of Employment:</span>
+                                    <span className="font-bold text-slate-800 dark:text-slate-300">{displayFormattedDate(emp.dateJoined)}</span>
+                                  </div>
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-semibold">Joined Site Date:</span>
+                                    <span className="font-bold text-slate-800 dark:text-slate-300">{displayFormattedDate(emp.dateJoinedProject, 'N/A')}</span>
+                                  </div>
+                                  {emp.remarks && (
+                                    <div className="text-[9px] text-slate-400 bg-slate-50 dark:bg-slate-900/60 p-1.5 rounded border border-slate-100 dark:border-slate-800 mt-1 truncate" title={emp.remarks}>
+                                      <strong>Remarks:</strong> {emp.remarks}
+                                    </div>
+                                  )}
+                                  {emp.status === 'Resigned' && (
+                                    <div className="flex justify-between text-red-600 dark:text-red-400 font-bold pt-1">
+                                      <span>Last Working Day:</span>
+                                      <span>{emp.lastDateOfWork || 'Not Listed'}</span>
+                                    </div>
+                                  )}
+
+                                  {/* Action buttons */}
+                                  <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedColleague(emp);
+                                      }}
+                                      className="flex-1 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer text-center"
+                                    >
+                                      View ID Profile
+                                    </button>
+
+                                    {canEdit && (
+                                      <>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setEditingEmployee(emp);
+                                            setIsEmpModalOpen(true);
+                                          }}
+                                          className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer"
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteEmployee(emp.email || emp.id);
+                                          }}
+                                          className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 dark:bg-red-950/30 dark:text-red-400 rounded-lg text-[10px] font-bold uppercase transition-all cursor-pointer flex items-center gap-1"
+                                          title="Delete Staff permanently"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                          <span>Delete</span>
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+                        </div>
+                      );
+                    })}
+
+                    {filteredEmployeesForActiveUser.length === 0 && (
+                      <div className="col-span-full py-16 text-center">
+                        <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
+                        <p className="text-xs font-bold text-slate-400 uppercase">No colleague matches found.</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">Try altering search parameters or selected filters.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
 
               </motion.div>
             )}
@@ -2293,7 +2960,7 @@ function AppContent() {
                     </div>
                   </div>
                   
-                  {isAdmin && (
+                  {canEdit && (
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => { setEditingSite(null); setIsSiteModalOpen(true); }}
@@ -2323,7 +2990,7 @@ function AppContent() {
                               <MapPin className="w-5 h-5" />
                             </div>
                             
-                            {isAdmin && (
+                            {canEdit && (
                               <div className="flex items-center gap-1.5">
                                 {isConfirmingDelete ? (
                                   <div className="flex gap-1">
@@ -2416,10 +3083,10 @@ function AppContent() {
                     </div>
                   </div>
                   
-                  {isAdmin && (
+                  {canEdit && (
                     <div className="flex items-center gap-2">
                       <button
-                        onClick={() => setIsAnnounceModalOpen(true)}
+                        onClick={() => { setEditingAnnouncement(null); setIsAnnounceModalOpen(true); }}
                         className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 transition-colors cursor-pointer"
                       >
                         <Plus className="w-4 h-4" />
@@ -2449,20 +3116,32 @@ function AppContent() {
                             <span className="text-blue-600 dark:text-blue-400">By: {ann.authorName}</span>
                           </div>
                         </div>
-                        {isAdmin && (
-                          <button
-                            onClick={() => handleDeleteAnnouncement(ann.id)}
-                            className="p-2 text-slate-400 hover:text-red-600 dark:hover:text-red-400 bg-slate-50 hover:bg-red-50 dark:bg-slate-900 dark:hover:bg-red-950/40 rounded-xl transition-colors cursor-pointer flex items-center justify-center shrink-0"
-                            title="Delete Announcement"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                        {canEdit && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => {
+                                setEditingAnnouncement(ann);
+                                setIsAnnounceModalOpen(true);
+                              }}
+                              className="p-2 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 bg-slate-50 hover:bg-blue-50 dark:bg-slate-900 dark:hover:bg-blue-950/40 rounded-xl transition-colors cursor-pointer flex items-center justify-center shrink-0"
+                              title="Edit Announcement"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteAnnouncement(ann.id)}
+                              className="p-2 text-slate-400 hover:text-red-600 dark:hover:text-red-400 bg-slate-50 hover:bg-red-50 dark:bg-slate-900 dark:hover:bg-red-950/40 rounded-xl transition-colors cursor-pointer flex items-center justify-center shrink-0"
+                              title="Delete Announcement"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
                         )}
                       </div>
 
-                      <p className="text-xs text-slate-700 dark:text-slate-350 leading-relaxed font-medium">
-                        {ann.content}
-                      </p>
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80">
+                        <FormattedAnnouncement content={ann.content} />
+                      </div>
                     </div>
                   ))}
 
@@ -2562,99 +3241,151 @@ function AppContent() {
 
       </main>
 
+      {/* FLOATING BATCH SELECTION & DELETION BAR (SUPER ADMIN ONLY) */}
+      <AnimatePresence>
+        {canEdit && selectedStaffForDelete.length > 0 && (
+          <motion.div 
+            initial={{ opacity: 0, y: 50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 50, scale: 0.95 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[150] bg-slate-900 text-white dark:bg-slate-950 dark:border dark:border-slate-800 px-6 py-3.5 rounded-2xl shadow-2xl flex items-center gap-4 max-w-[95vw] sm:max-w-auto"
+          >
+            <div className="flex items-center gap-2">
+              <CheckSquare className="w-5 h-5 text-red-400" />
+              <span className="text-xs font-black uppercase tracking-wider text-slate-100">
+                {selectedStaffForDelete.length} Staff Selected
+              </span>
+            </div>
+            <div className="h-4 w-px bg-slate-700" />
+            <button
+              onClick={handleDeleteSelectedStaff}
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shadow-md transition-all cursor-pointer"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>Delete Selected ({selectedStaffForDelete.length})</span>
+            </button>
+            <button
+              onClick={() => setSelectedStaffForDelete([])}
+              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold uppercase transition-all cursor-pointer"
+            >
+              Cancel
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ==================== MODALS MATRIX ==================== */}
       
       {/* 1. COLLEAGUE ID DETAIL SHEET */}
-      {selectedColleague && (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 dark:bg-slate-950/85 backdrop-blur-xs" id="colleague-profile-modal">
-          <div className="bg-white dark:bg-[#0B132B] rounded-3xl w-full max-w-sm border border-slate-100 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            
-            {/* Front Header */}
-            <div className="flex justify-between items-center px-6 py-4 bg-gradient-to-r from-blue-900 to-slate-900 text-white border-b border-white/10">
-              <span className="text-xs font-black uppercase tracking-wider">Colleague Badge Viewer</span>
-              <button 
-                onClick={() => setSelectedColleague(null)}
-                className="p-1 rounded bg-white/10 hover:bg-white/20 text-white cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col items-center">
+      <AnimatePresence>
+        {selectedColleague && (
+          <motion.div 
+            id="colleague-profile-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setSelectedColleague(null);
+            }}
+            className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-slate-900/60 dark:bg-slate-950/85 backdrop-blur-xs"
+          >
+            <motion.div 
+              id="colleague-profile-modal"
+              initial={{ opacity: 0, scale: 0.94, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.94, y: 12 }}
+              transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+              className="bg-white dark:bg-[#0B132B] rounded-3xl w-full max-w-md border border-slate-100 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            >
               
-              <DigitalIDCard employee={selectedColleague} />
-
-              {/* Extra Details sheet */}
-              <div className="w-full space-y-3.5 bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl text-xs border border-slate-150 dark:border-slate-800">
-                <h4 className="font-black text-slate-950 dark:text-white uppercase tracking-wider text-[10px] text-center border-b border-slate-200 dark:border-slate-800 pb-1.5">
-                  Secure Profile Card Details
-                </h4>
-
-                <div className="grid grid-cols-2 gap-x-2 gap-y-3 text-[11px]">
-                  <div className="col-span-2">
-                    <span className="text-slate-400 font-bold block">EMAIL ADDRESS</span>
-                    <span className="font-extrabold text-slate-800 dark:text-slate-200 truncate block" title={selectedColleague.email}>{selectedColleague.email}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 font-bold block">EMPLOYMENT DATE</span>
-                    <span className="font-extrabold text-slate-800 dark:text-slate-200">{selectedColleague.dateJoined}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 font-bold block">DATE JOINED TO SITE</span>
-                    <span className="font-extrabold text-slate-800 dark:text-slate-200">{selectedColleague.dateJoinedProject || 'N/A'}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 font-bold block">STATUS</span>
-                    <span className={`font-extrabold ${
-                      selectedColleague.status === 'Active' 
-                        ? 'text-green-500' 
-                        : selectedColleague.status === 'Resigned'
-                        ? 'text-red-500'
-                        : 'text-amber-500'
-                    }`}>{selectedColleague.status}</span>
-                  </div>
-                  <div className="col-span-2">
-                    <span className="text-slate-400 font-bold block">REMARKS</span>
-                    <span className="font-extrabold text-slate-800 dark:text-slate-200 block whitespace-pre-wrap">{selectedColleague.remarks || 'No remarks provided'}</span>
-                  </div>
-                  {selectedColleague.status === 'Resigned' && (
-                    <div className="col-span-2 bg-red-500/10 p-2 rounded-lg border border-red-500/20">
-                      <span className="text-red-500 font-black block text-[9px] uppercase tracking-wider">LAST DATE OF WORK</span>
-                      <span className="font-extrabold text-red-600 dark:text-red-400 text-xs">{selectedColleague.lastDateOfWork || 'Not specified'}</span>
-                    </div>
-                  )}
-                </div>
+              {/* Front Header */}
+              <div className="flex justify-between items-center px-6 py-4 bg-gradient-to-r from-blue-900 to-slate-900 text-white border-b border-white/10">
+                <span className="text-xs font-black uppercase tracking-wider">Colleague Badge Viewer</span>
+                <button 
+                  onClick={() => setSelectedColleague(null)}
+                  className="p-1 rounded bg-white/10 hover:bg-white/20 text-white cursor-pointer transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
 
-              {isAdmin && (
-                <div className="w-full flex gap-2">
-                  <button
-                    onClick={() => {
-                      const email = selectedColleague.email;
-                      setSelectedColleague(null);
-                      handleAdminResetPassword(email);
-                    }}
-                    className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
-                  >
-                    Reset Password
-                  </button>
-                  <button
-                    onClick={() => {
-                      const email = selectedColleague.email;
-                      setSelectedColleague(null);
-                      handleDeleteEmployee(email);
-                    }}
-                    className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
-                  >
-                    Delete Profile
-                  </button>
-                </div>
-              )}
+              <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col items-center">
+                
+                <DigitalIDCard employee={selectedColleague} />
 
-            </div>
-          </div>
-        </div>
-      )}
+                {/* Extra Details sheet */}
+                <div className="w-full space-y-3.5 bg-slate-50 dark:bg-slate-900/50 p-4 rounded-2xl text-xs border border-slate-150 dark:border-slate-800">
+                  <h4 className="font-black text-slate-950 dark:text-white uppercase tracking-wider text-[10px] text-center border-b border-slate-200 dark:border-slate-800 pb-1.5">
+                    Secure Profile Card Details
+                  </h4>
+
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-3 text-[11px]">
+                    <div className="col-span-2">
+                      <span className="text-slate-400 font-bold block">EMAIL ADDRESS</span>
+                      <span className="font-extrabold text-slate-800 dark:text-slate-200 truncate block" title={selectedColleague.email}>{selectedColleague.email}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 font-bold block">EMPLOYMENT DATE</span>
+                      <span className="font-extrabold text-slate-800 dark:text-slate-200">{displayFormattedDate(selectedColleague.dateJoined)}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 font-bold block">DATE JOINED TO SITE</span>
+                      <span className="font-extrabold text-slate-800 dark:text-slate-200">{displayFormattedDate(selectedColleague.dateJoinedProject, 'N/A')}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 font-bold block">STATUS</span>
+                      <span className={`font-extrabold ${
+                        selectedColleague.status === 'Active' 
+                          ? 'text-green-500' 
+                          : selectedColleague.status === 'Resigned'
+                          ? 'text-red-500'
+                          : 'text-amber-500'
+                      }`}>{selectedColleague.status}</span>
+                    </div>
+                    <div className="col-span-2">
+                      <span className="text-slate-400 font-bold block">REMARKS</span>
+                      <span className="font-extrabold text-slate-800 dark:text-slate-200 block whitespace-pre-wrap">{selectedColleague.remarks || 'No remarks provided'}</span>
+                    </div>
+                    {selectedColleague.status === 'Resigned' && (
+                      <div className="col-span-2 bg-red-500/10 p-2 rounded-lg border border-red-500/20">
+                        <span className="text-red-500 font-black block text-[9px] uppercase tracking-wider">LAST DATE OF WORK</span>
+                        <span className="font-extrabold text-red-600 dark:text-red-400 text-xs">{selectedColleague.lastDateOfWork || 'Not specified'}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {canEdit && (
+                  <div className="w-full flex gap-2">
+                    <button
+                      onClick={() => {
+                        const email = selectedColleague.email;
+                        setSelectedColleague(null);
+                        handleAdminResetPassword(email);
+                      }}
+                      className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
+                    >
+                      Reset Password
+                    </button>
+                    <button
+                      onClick={() => {
+                        const targetId = selectedColleague.email || selectedColleague.id;
+                        setSelectedColleague(null);
+                        handleDeleteEmployee(targetId);
+                      }}
+                      className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-colors cursor-pointer"
+                    >
+                      Delete Profile
+                    </button>
+                  </div>
+                )}
+
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 2. ADMIN REGISTER/EDIT STAFF MODAL */}
       <AddEmployeeModal 
@@ -2673,11 +3404,12 @@ function AppContent() {
         editingSite={editingSite}
       />
 
-      {/* 4. ADMIN ADD ANNOUNCEMENT MODAL */}
+      {/* 4. ADMIN ADD / EDIT ANNOUNCEMENT MODAL */}
       <AddAnnouncementModal 
         isOpen={isAnnounceModalOpen}
-        onClose={() => setIsAnnounceModalOpen(false)}
-        onSave={handleCreateAnnouncement}
+        onClose={() => { setIsAnnounceModalOpen(false); setEditingAnnouncement(null); }}
+        onSave={handleSaveAnnouncement}
+        editingAnnouncement={editingAnnouncement}
       />
 
       {/* 5. SITE COWORKERS DIRECTORY MODAL */}
@@ -2690,6 +3422,23 @@ function AppContent() {
           setSelectedColleague(emp);
           setIsCoworkersModalOpen(false);
         }}
+      />
+
+      {/* 6. ADMIN IN-APP DELETE CONFIRMATION MODAL */}
+      <ConfirmDeleteModal 
+        isOpen={deleteModalState.isOpen}
+        title={deleteModalState.title}
+        description={deleteModalState.description}
+        items={deleteModalState.items}
+        isLoading={deleteModalState.isLoading}
+        onConfirm={deleteModalState.onConfirm}
+        onClose={() => setDeleteModalState(prev => ({ ...prev, isOpen: false }))}
+      />
+
+      {/* 7. GLOBAL IN-APP TOAST NOTIFICATION */}
+      <ToastNotification 
+        toast={toastState}
+        onClose={() => setToastState(null)}
       />
 
     </div>

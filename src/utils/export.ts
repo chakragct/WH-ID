@@ -30,6 +30,7 @@ export function exportEmployeesToExcel(employees: Employee[]): void {
     'Company': emp.company,
     'Assigned Sites': (emp.workSites || []).join(', '),
     'Status': emp.status,
+    'Last Date of Work': emp.lastDateOfWork || '',
     'Date Joined': emp.dateJoined,
     'Date Joined to Site': emp.dateJoinedProject || '',
     'Role': emp.role,
@@ -48,6 +49,7 @@ export function exportEmployeesToExcel(employees: Employee[]): void {
     { wch: 24 }, // Company
     { wch: 25 }, // Assigned Sites
     { wch: 12 }, // Status
+    { wch: 18 }, // Last Date of Work
     { wch: 14 }, // Date Joined
     { wch: 20 }, // Date Joined to Site
     { wch: 12 }, // Role

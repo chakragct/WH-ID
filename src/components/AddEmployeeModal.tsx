@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, User, Briefcase, MapPin, Heart, Plus, Upload } from 'lucide-react';
 import { Employee, WorkSite } from '../types';
+import { formatDateValue } from '../utils/dateUtils';
 
 interface AddEmployeeModalProps {
   isOpen: boolean;
@@ -86,9 +87,9 @@ export default function AddEmployeeModal({ isOpen, onClose, onSave, editingEmplo
       setCompany(editingEmployee.company || 'WeeHur Construction');
       setSelectedSites(editingEmployee.workSites || []);
       setStatus(editingEmployee.status || 'Active');
-      setLastDateOfWork(editingEmployee.lastDateOfWork || '');
-      setDateJoined(editingEmployee.dateJoined || new Date().toISOString().split('T')[0]);
-      setDateJoinedProject(editingEmployee.dateJoinedProject || '');
+      setLastDateOfWork(formatDateValue(editingEmployee.lastDateOfWork));
+      setDateJoined(formatDateValue(editingEmployee.dateJoined) || new Date().toISOString().split('T')[0]);
+      setDateJoinedProject(formatDateValue(editingEmployee.dateJoinedProject));
       setRemarks(editingEmployee.remarks || '');
       setRole(editingEmployee.role || 'Employee');
     } else {
@@ -127,14 +128,20 @@ export default function AddEmployeeModal({ isOpen, onClose, onSave, editingEmplo
     setFormError(null);
 
     // Validations
-    if (!employeeId.trim() || !fullName.trim() || !email.trim() || !designation.trim()) {
-      setFormError('Please complete all mandatory fields (Staff ID, Full Name, Email, Designation).');
+    if (!employeeId.trim() || !fullName.trim() || !designation.trim()) {
+      setFormError('Please complete all mandatory fields (Staff ID, Full Name, Designation).');
       return;
     }
-    if (!email.trim().toLowerCase().endsWith('@weehur.com.sg')) {
-      setFormError('Access Denied. Staff email address must belong to the weehur domain (@weehur.com.sg).');
-      return;
+
+    let finalEmail = email.trim().toLowerCase();
+    if (!finalEmail) {
+      const cleanName = fullName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'staff';
+      const cleanEmpId = employeeId.toLowerCase().replace(/[^a-z0-9]/g, '') || Math.floor(1000 + Math.random() * 9000);
+      finalEmail = `${cleanName}.${cleanEmpId}@weehur.com.sg`;
+    } else if (!finalEmail.includes('@')) {
+      finalEmail = `${finalEmail.replace(/[^a-z0-9._-]/g, '')}@weehur.com.sg`;
     }
+
     if (selectedSites.length === 0) {
       setFormError('Employee must be assigned to at least one work site.');
       return;
@@ -150,7 +157,7 @@ export default function AddEmployeeModal({ isOpen, onClose, onSave, editingEmplo
         employeeId: employeeId.trim(),
         fullName: fullName.trim(),
         photoUrl: photoUrl.trim(),
-        email: email.trim().toLowerCase(),
+        email: finalEmail,
         phone: phone.trim() || '-',
         designation: designation.trim(),
         department: department.trim() || 'Construction',
@@ -318,22 +325,33 @@ export default function AddEmployeeModal({ isOpen, onClose, onSave, editingEmplo
               />
             </div>
 
-            <div className="col-span-1 sm:col-span-2">
-              <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
-                Email Address <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="email"
-                required
-                disabled={!!editingEmployee}
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="e.g. kenneth@weehur.com.sg"
-                className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
-              />
-              {!editingEmployee && (
-                <p className="text-[9px] text-gray-400 mt-1">Pre-registers the Email. User creates password on first login.</p>
-              )}
+            <div className="col-span-1 sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                  Email Address <span className="text-slate-400 font-normal">(Editable)</span>
+                </label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="e.g. kenneth@weehur.com.sg"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
+                />
+                <p className="text-[9px] text-gray-400 mt-1">If blank, an email address will be automatically generated.</p>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1.5">
+                  Mobile Number / Phone
+                </label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="e.g. +65 9123 4567"
+                  className="w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+              </div>
             </div>
           </div>
 
@@ -402,22 +420,29 @@ export default function AddEmployeeModal({ isOpen, onClose, onSave, editingEmplo
               <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400 mb-2">
                 Assign to Work Sites (Select One or Multiple) <span className="text-red-500">*</span>
               </label>
-              <div className="flex flex-wrap gap-2">
-                {sites.map(site => (
-                  <button
-                    type="button"
-                    key={site.id}
-                    onClick={() => handleToggleSite(site.name)}
-                    className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 ${
-                      selectedSites.includes(site.name)
-                        ? 'border-blue-600 bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400'
-                        : 'border-slate-200 bg-white dark:bg-slate-950 dark:border-slate-800 text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <MapPin className="w-3.5 h-3.5" />
-                    <span>{site.name}</span>
-                  </button>
-                ))}
+              <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-1 bg-slate-100/50 dark:bg-slate-950/40 rounded-2xl border border-slate-150 dark:border-slate-800/80">
+                {Array.from(new Set([
+                  ...sites.map(s => s.name),
+                  ...(editingEmployee?.workSites || []),
+                  'CORPORATE', 'BC14AB', 'DEFECT', 'JBR', 'KEPPEL C2', 'KLH', 'FPC', 'N8C15', 'Spring Leaf', 'TANK97', 'THY', 'TVD', 'W2RC', 'WAIS', 'Site A', 'Site B', 'Site C', 'Site D'
+                ])).filter(Boolean).map(siteName => {
+                  const isSelected = selectedSites.includes(siteName);
+                  return (
+                    <button
+                      type="button"
+                      key={siteName}
+                      onClick={() => handleToggleSite(siteName)}
+                      className={`px-3 py-1.5 rounded-xl border text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        isSelected
+                          ? 'border-blue-600 bg-blue-600 text-white shadow-sm font-extrabold scale-[1.02]'
+                          : 'border-slate-200 bg-white dark:bg-slate-900 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:border-blue-400'
+                      }`}
+                    >
+                      <MapPin className={`w-3.5 h-3.5 ${isSelected ? 'text-white' : 'text-slate-400'}`} />
+                      <span>{siteName}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
@@ -471,6 +496,12 @@ export default function AddEmployeeModal({ isOpen, onClose, onSave, editingEmplo
               )}
             </div>
           </div>
+
+          {formError && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/30 text-red-600 dark:text-red-400 text-xs font-bold rounded-xl border border-red-200 dark:border-red-900/50">
+              {formError}
+            </div>
+          )}
 
           {/* Buttons Footer */}
           <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100 dark:border-slate-800/80">
